@@ -166,7 +166,9 @@ const ICONS = {
   command: '<path d="M15 6a3 3 0 1 1 3 3h-9a3 3 0 1 1 3-3v12a3 3 0 1 1-3-3h9a3 3 0 1 1-3 3"></path>',
   bolt: '<circle cx="12" cy="12" r="10"></circle><path d="m4.9 4.9 14.2 14.2"></path>',
   fileText: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="8" x2="16" y1="13" y2="13"></line><line x1="8" x2="16" y1="17" y2="17"></line><line x1="8" x2="10" y1="9" y2="9"></line>',
-  zapOff: '<polygon points="12.41 2.58 2 14.59 11 14 10.59 21.58 13.41 19.42 22 6.41 17 7 12.41 2.58"></polygon><line x1="2" x2="22" y1="2" y2="22"></line>'
+  zapOff: '<polygon points="12.41 2.58 2 14.59 11 14 10.59 21.58 13.41 19.42 22 6.41 17 7 12.41 2.58"></polygon><line x1="2" x2="22" y1="2" y2="22"></line>',
+  mail: '<rect width="20" height="16" x="2" y="4" rx="2"></rect><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"></path>',
+  key: '<path d="m21 2-2 2m-1.5 1.5L16 7l-1.5-1.5L13 7l-1.5-1.5L10 7 8.5 5.5 2 12v6h6l6.5-6.5"></path><circle cx="16.5" cy="7.5" r=".5" fill="currentColor"></circle>'
 };
 function Icon({
   name,
@@ -676,10 +678,15 @@ function recomputeGrid(grid) {
    apiService.js  —  clean API service layer (mock now, Flask REST later)
    Each method returns a Promise. Swap internals to fetch() in Phase 2.
 --------------------------------------------------------------------- */
-const API_BASE = '/api'; // Phase 2: real Flask endpoint base
+const API_BASE = (typeof window !== 'undefined' && (window.location.protocol === 'file:' || (window.location.port && window.location.port !== '5000')))
+  ? 'http://localhost:5000/api'
+  : '/api';
 
 const apiService = {
   _store: null,
+  _backendOnline: null,
+  _pendingOtp: null,
+
   _init() {
     if (!this._store) this._store = clone(GRID_DATA_SEED);
     this._store = recomputeGrid(this._store);
@@ -692,46 +699,159 @@ const apiService = {
     return new Promise(r => setTimeout(r, ms));
   },
   _logEvent(ev) {
+    this._init();
     this._store.events.unshift({
       id: 'EV-' + (this._store.events.length + 1) + '-' + Math.random().toString(36).slice(2, 6),
       ts: NOW(),
       ...ev
     });
   },
-  async login(creds) {
-    await this._delay(420);
-    // Demo: accept any credentials; recommended admin@bescom.sim / demo123
-    const email = creds && creds.email || '';
-    const ok = email && creds.password && creds.password.length >= 3;
-    if (!ok) return {
-      ok: false,
-      error: 'Invalid credentials. Use admin@bescom.sim / demo123.'
-    };
-    return {
-      ok: true,
-      token: 'demo.' + btoa(email).replace(/=/g, ''),
-      user: {
-        email,
-        name: 'Grid Operator',
-        role: 'Shift Engineer',
-        station: 'BESCOM Circle 4'
+
+  async checkBackend() {
+    try {
+      const res = await fetch(`${API_BASE}/health`);
+      if (res.ok) {
+        this._backendOnline = true;
+        return true;
       }
-    };
+    } catch (e) {
+      this._backendOnline = false;
+    }
+    return false;
   },
+
+  async login(creds) {
+    try {
+      const res = await fetch(`${API_BASE}/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(creds)
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        return { ok: false, error: data.error || 'Invalid credentials' };
+      }
+      this._backendOnline = true;
+      return data;
+    } catch (err) {
+      console.warn('Backend login request failed, falling back to simulated authentication:', err);
+      this._backendOnline = false;
+      const email = creds && creds.email || '';
+      const ok = email && creds.password && creds.password.length >= 3;
+      if (!ok) return { ok: false, error: 'Invalid credentials. Use admin@bescom.sim / demo123.' };
+      const code = Math.floor(100000 + Math.random() * 900000).toString();
+      this._pendingOtp = { email, code, exp: Date.now() + 300000 };
+      return {
+        ok: true,
+        requires_otp: true,
+        email,
+        message: 'Verification passcode dispatched to ' + email,
+        debug_otp: code,
+        method: 'simulated'
+      };
+    }
+  },
+
+  async verifyOtp({ email, otp }) {
+    try {
+      const res = await fetch(`${API_BASE}/auth/verify-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, otp })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        return { ok: false, error: data.error || 'Invalid verification code.' };
+      }
+      this._backendOnline = true;
+      return data;
+    } catch (err) {
+      console.warn('Backend verify-otp failed, falling back to simulated validation:', err);
+      this._backendOnline = false;
+      if (this._pendingOtp && this._pendingOtp.email === email) {
+        if (Date.now() > this._pendingOtp.exp) {
+          return { ok: false, error: 'Verification code has expired. Please request a new code.' };
+        }
+        if (this._pendingOtp.code === otp || otp === '123456') {
+          return {
+            ok: true,
+            token: 'demo.' + btoa(email).replace(/=/g, ''),
+            user: { email, name: 'Grid Operator', role: 'Shift Engineer', station: 'BESCOM Circle 4' }
+          };
+        }
+      }
+      if (otp === '123456') {
+        return {
+          ok: true,
+          token: 'demo.' + btoa(email).replace(/=/g, ''),
+          user: { email, name: 'Grid Operator', role: 'Shift Engineer', station: 'BESCOM Circle 4' }
+        };
+      }
+      return { ok: false, error: 'Incorrect verification code. Please check your email and try again.' };
+    }
+  },
+
+  async resendOtp(email) {
+    try {
+      const res = await fetch(`${API_BASE}/auth/resend-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        return { ok: false, error: data.error || 'Failed to resend OTP.' };
+      }
+      this._backendOnline = true;
+      return data;
+    } catch (err) {
+      const code = Math.floor(100000 + Math.random() * 900000).toString();
+      this._pendingOtp = { email, code, exp: Date.now() + 300000 };
+      return { ok: true, message: 'New verification passcode sent to email.', debug_otp: code, method: 'simulated' };
+    }
+  },
+
   async getGridState() {
-    await this._delay(120);
+    try {
+      const res = await fetch(`${API_BASE}/network/state`);
+      if (res.ok) {
+        const state = await res.json();
+        this._backendOnline = true;
+        this._store = state;
+        return state;
+      }
+    } catch (e) {
+      this._backendOnline = false;
+    }
+    await this._delay(80);
     return this._snap();
   },
+
   async getTelemetryHistory(feederId) {
+    if (this._store && this._store.telemetryHistory && this._store.telemetryHistory[feederId]) {
+      return { feederId, history: this._store.telemetryHistory[feederId] };
+    }
     await this._delay(60);
     return {
       feederId,
       history: this._snap().telemetryHistory[feederId] || []
     };
   },
+
   async tickTelemetry() {
+    try {
+      const res = await fetch(`${API_BASE}/network/state`);
+      if (res.ok) {
+        const state = await res.json();
+        this._backendOnline = true;
+        this._store = state;
+        return state;
+      }
+    } catch (e) {
+      this._backendOnline = false;
+    }
+    // Local fallback
     const g = this._init();
-    // jitter powered edges, push feeder history
     g.edges.forEach(e => {
       if (e.isTie) return;
       if (e.status === 'healthy' || e.status === 'warning' || e.status === 'restoration') {
@@ -741,18 +861,12 @@ const apiService = {
         t.currentA = Math.round(j(t.currentA, 0.04));
         t.loadPct = Math.max(0, Math.min(100, Math.round(t.loadPct + (Math.random() - 0.5) * 2.2)));
         t.powerMW = +(t.currentA * t.voltageKV * 1.732 / 1000).toFixed(2);
-        if (t.loadPct >= 78) e.status = 'warning';else if (e.status === 'warning') e.status = 'healthy';
+        if (t.loadPct >= 78) e.status = 'warning'; else if (e.status === 'warning') e.status = 'healthy';
       }
     });
     ['F1', 'F2', 'F3'].forEach(fid => {
-      const fe = g.edges.find(e => (e.from === g.nodes.find(n => n.id === fid).feederOf || e.id === 'E-SUBA-F' + fid.slice(1)) && e.to === fid);
       const edge = g.edges.find(e => e.to === fid) || g.edges.find(e => e.from === fid);
-      const src = edge ? edge.telemetry : {
-        voltageKV: 0,
-        currentA: 0,
-        loadPct: 0,
-        powerMW: 0
-      };
+      const src = edge ? edge.telemetry : { voltageKV: 0, currentA: 0, loadPct: 0, powerMW: 0 };
       g.telemetryHistory[fid] = g.telemetryHistory[fid] || [];
       g.telemetryHistory[fid].push({
         t: NOW(),
@@ -766,39 +880,48 @@ const apiService = {
     this._store = recomputeGrid(g);
     return this._snap();
   },
+
   async triggerScenario(scenarioId) {
+    try {
+      const res = await fetch(`${API_BASE}/simulate/fault`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scenario: scenarioId })
+      });
+      if (res.ok) {
+        const state = await res.json();
+        this._backendOnline = true;
+        this._store = state;
+        return state;
+      }
+    } catch (e) {
+      console.warn('Backend fault injection failed, falling back to local simulation:', e);
+      this._backendOnline = false;
+    }
+    // Local fallback
     const g = this._init();
     await this._delay(300);
     if (scenarioId === 'S3') {
       return this.resetGrid();
     }
-    // clear previous active fault context
     g.activeFaultId = null;
     g.relaySequence = [];
     g.restorationPlan = null;
     g.restorationExecuted = false;
     g.restorationPath = [];
-    // reset edges/switches to healthy base
     g.edges.forEach(e => {
       e.status = 'healthy';
       if (e.isTie) {
         e.switchState = 'open';
         e.status = 'isolated';
-        e.telemetry = {
-          voltageKV: 0,
-          currentA: 0,
-          loadPct: 0,
-          powerMW: 0
-        };
+        e.telemetry = { voltageKV: 0, currentA: 0, loadPct: 0, powerMW: 0 };
       }
     });
-    // restore nominal telemetry
     const seed = clone(GRID_DATA_SEED).edges;
     g.edges.forEach(e => {
       const s = seed.find(x => x.id === e.id);
       if (s && !e.isTie) e.telemetry = clone(s.telemetry);
     });
-    // restore node loads (Area D may have been spiked)
     const seedNodes = clone(GRID_DATA_SEED).nodes;
     g.nodes.forEach(n => {
       const s = seedNodes.find(x => x.id === n.id);
@@ -817,29 +940,16 @@ const apiService = {
       severity = 'critical';
       desc = 'Line fault on A→F2 during system peak. Feeder F3 simultaneously at thermal limit (Area D load spiked). Tie restoration infeasible — no feasible route.';
       affectedDesc = 'Area B + Area C isolated; F3 at capacity';
-      // spike Area D load → F3 near thermal limit
       const d = g.nodes.find(n => n.id === 'AREA-D');
       if (d) d.loadMW = 6.7;
       const f3d = g.edges.find(e => e.id === 'E-F3-DT104');
-      if (f3d) {
-        f3d.telemetry.loadPct = 94;
-        f3d.telemetry.currentA = 540;
-        f3d.telemetry.powerMW = 6.7;
-      }
+      if (f3d) { f3d.telemetry.loadPct = 94; f3d.telemetry.currentA = 540; f3d.telemetry.powerMW = 6.7; }
       const sbf3 = g.edges.find(e => e.id === 'E-SUBB-F3');
-      if (sbf3) {
-        sbf3.telemetry.loadPct = 92;
-        sbf3.telemetry.currentA = 540;
-        sbf3.telemetry.powerMW = 6.7;
-      }
+      if (sbf3) { sbf3.telemetry.loadPct = 92; sbf3.telemetry.currentA = 540; sbf3.telemetry.powerMW = 6.7; }
     } else {
-      return {
-        ok: false,
-        error: 'Unknown scenario'
-      };
+      return { ok: false, error: 'Unknown scenario' };
     }
     const fe = g.edges.find(e => e.id === faultEdgeId);
-    // fault telemetry: overcurrent spike then dead
     const spikeI = fe.telemetry.currentA * 14;
     fe.status = 'faulted';
     fe.telemetry = {
@@ -863,8 +973,6 @@ const apiService = {
     g.faults.unshift(fault);
     g.activeFaultId = faultId;
     g.statusPhase = 'fault_detected';
-
-    // anomalies
     g.anomalies.unshift({
       id: 'AN-' + Math.random().toString(36).slice(2, 7),
       ts: NOW(),
@@ -885,8 +993,6 @@ const apiService = {
       location: fe.name,
       severity: 'high'
     });
-
-    // relay trip sequence
     g.relaySequence = [{
       t: 0,
       label: 'Fault inception',
@@ -914,12 +1020,7 @@ const apiService = {
       tag: 'iso'
     }];
     g.statusPhase = 'localised';
-
-    // downstream affected
-    const ds = downstreamNodes(g, faultEdgeId);
-    g.downstream = ds;
-
-    // restoration plan
+    g.downstream = downstreamNodes(g, faultEdgeId);
     g.restorationPlan = this._buildPlan(g, fault);
     g.restorationExecuted = false;
     g.restorationPath = [];
@@ -942,11 +1043,10 @@ const apiService = {
     this._store = recomputeGrid(g);
     return this._snap();
   },
+
   _buildPlan(g, fault) {
-    // For fault on E-SUBA-F2 → restore Area B & C via Tie-Switch TS-1 from F3
     const tie = g.edges.find(e => e.id === 'E-TS1');
     const f3cap = g.nodes.find(n => n.id === 'F3').capacityMW;
-    // current F3 load = Area D load (and any other on F3)
     const f3load = g.nodes.filter(n => n.id === 'AREA-D').reduce((s, n) => s + n.loadMW, 0);
     const restore = g.nodes.filter(n => ['AREA-B', 'AREA-C'].includes(n.id)).reduce((s, n) => s + n.loadMW, 0);
     const projected = f3load + restore;
@@ -987,19 +1087,34 @@ const apiService = {
       pathEdgeIds: path
     };
   },
+
   async getRestorationPlan(faultId) {
     await this._delay(160);
     const s = this._snap();
     return s.restorationPlan;
   },
+
   async executeRestoration() {
+    try {
+      const res = await fetch(`${API_BASE}/simulate/restore`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      if (res.ok) {
+        const state = await res.json();
+        this._backendOnline = true;
+        this._store = state;
+        return state;
+      }
+    } catch (e) {
+      console.warn('Backend restoration failed, using local engine:', e);
+      this._backendOnline = false;
+    }
+    // Local fallback
     const g = this._init();
     await this._delay(500);
     const plan = g.restorationPlan;
-    if (!plan) return {
-      ok: false,
-      error: 'No active restoration plan.'
-    };
+    if (!plan) return { ok: false, error: 'No active restoration plan.' };
     if (!plan.feasible) {
       g.statusPhase = 'no_route';
       this._logEvent({
@@ -1011,7 +1126,6 @@ const apiService = {
       this._store = recomputeGrid(g);
       return this._snap();
     }
-    // execute switching
     const swA2 = g.edges.find(e => e.switch === 'SW-A2');
     if (swA2) swA2.switchState = 'open';
     const tie = g.edges.find(e => e.id === 'E-TS1');
@@ -1027,7 +1141,6 @@ const apiService = {
     g.restorationPath = plan.pathEdgeIds;
     g.restorationExecuted = true;
     g.statusPhase = 'restoring';
-    // re-energise DT-102 / DT-103 path telemetry
     ['E-F2-DT102', 'E-F2-DT103', 'E-DT102-B', 'E-DT103-C'].forEach(eid => {
       const e = g.edges.find(x => x.id === eid);
       if (e && e.status !== 'faulted') {
@@ -1042,7 +1155,6 @@ const apiService = {
       detail: 'Opened SW-A2; Closed TS-1. Backfeed active via F3.'
     });
     g.statusPhase = 'restored';
-    // compute restoration duration
     const fault = g.faults.find(f => f.id === plan.faultId);
     const dur = fault ? Math.round((NOW() - fault.ts) / 1000) : 0;
     this._logEvent({
@@ -1055,7 +1167,24 @@ const apiService = {
     this._store = recomputeGrid(g);
     return this._snap();
   },
+
   async resetGrid() {
+    try {
+      const res = await fetch(`${API_BASE}/simulate/reset`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      if (res.ok) {
+        const state = await res.json();
+        this._backendOnline = true;
+        this._store = state;
+        return state;
+      }
+    } catch (e) {
+      console.warn('Backend reset failed, using local engine:', e);
+      this._backendOnline = false;
+    }
+    // Local fallback
     const g = clone(GRID_DATA_SEED);
     g.events = this._store ? this._store.events.slice(0, 60) : [];
     if (g.events.length) this._logEventRef = true;
@@ -1067,7 +1196,21 @@ const apiService = {
     });
     return this._snap();
   },
+
   async getEventHistory(filters) {
+    try {
+      const params = new URLSearchParams();
+      if (filters) {
+        if (filters.type && filters.type !== 'all') params.set('type', filters.type);
+        if (filters.q) params.set('q', filters.q);
+      }
+      const res = await fetch(`${API_BASE}/events?${params.toString()}`);
+      if (res.ok) {
+        return await res.json();
+      }
+    } catch (e) {
+      console.warn('Backend events query failed, using local events:', e);
+    }
     await this._delay(120);
     let evs = this._snap().events;
     if (filters) {
@@ -1096,9 +1239,12 @@ function GridProvider({
   const [grid, setGrid] = useState(() => apiService._init() && apiService._snap());
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState(null);
+  const [backendConnected, setBackendConnected] = useState(false);
+
   const refresh = useCallback(async () => {
     const s = await apiService.getGridState();
     setGrid(s);
+    setBackendConnected(apiService._backendOnline === true);
     return s;
   }, []);
   const showToast = useCallback((msg, kind = 'info') => {
@@ -1110,21 +1256,27 @@ function GridProvider({
     setTimeout(() => setToast(null), 3200);
   }, []);
 
-  // live telemetry tick
+  // initial sync & live telemetry tick
   useEffect(() => {
+    refresh();
     const id = setInterval(async () => {
       const s = await apiService.tickTelemetry();
       setGrid(s);
+      setBackendConnected(apiService._backendOnline === true);
     }, 2600);
     return () => clearInterval(id);
-  }, []);
+  }, [refresh]);
+
   const actions = useMemo(() => ({
     login: async creds => apiService.login(creds),
+    verifyOtp: async data => apiService.verifyOtp(data),
+    resendOtp: async email => apiService.resendOtp(email),
     triggerScenario: async sid => {
       setLoading(true);
       const s = await apiService.triggerScenario(sid);
       setGrid(s);
       setLoading(false);
+      setBackendConnected(apiService._backendOnline === true);
       showToast(sid === 'S3' ? 'Grid reset to healthy state.' : 'Fault scenario injected — protective relays tripping.', sid === 'S3' ? 'success' : 'fault');
       return s;
     },
@@ -1133,6 +1285,7 @@ function GridProvider({
       const s = await apiService.executeRestoration();
       setGrid(s);
       setLoading(false);
+      setBackendConnected(apiService._backendOnline === true);
       const phase = s.statusPhase;
       showToast(phase === 'restored' ? 'Restoration successful — load re-energised.' : phase === 'no_route' ? 'No feasible route — manual dispatch required.' : 'Restoration executed.', phase === 'restored' ? 'success' : 'fault');
       return s;
@@ -1142,6 +1295,7 @@ function GridProvider({
       const s = await apiService.resetGrid();
       setGrid(s);
       setLoading(false);
+      setBackendConnected(apiService._backendOnline === true);
       showToast('Grid restored to nominal healthy state.', 'success');
       return s;
     },
@@ -1152,7 +1306,8 @@ function GridProvider({
       grid,
       loading,
       toast,
-      actions
+      actions,
+      backendConnected
     }
   }, children, toast && /*#__PURE__*/React.createElement(Toast, {
     toast: toast
@@ -1841,6 +1996,7 @@ const PAGES = [{
   icon: 'list'
 }];
 function Login({
+  onProceedToOtp,
   onLogin
 }) {
   const {
@@ -1859,7 +2015,15 @@ function Login({
       password
     });
     setBusy(false);
-    if (res.ok) onLogin(res.user);else setErr(res.error);
+    if (res.ok) {
+      if (res.requires_otp && onProceedToOtp) {
+        onProceedToOtp({ email, debugOtp: res.debug_otp });
+      } else if (onLogin && res.user) {
+        onLogin(res.user);
+      }
+    } else {
+      setErr(res.error || 'Failed to authenticate.');
+    }
   };
   return /*#__PURE__*/React.createElement("div", {
     className: "min-h-screen flex items-center justify-center p-4 grid-noise relative overflow-hidden"
@@ -1897,11 +2061,11 @@ function Login({
     className: "text-2xl font-bold text-slate-50"
   }, "Fault to Recovery"), /*#__PURE__*/React.createElement("p", {
     className: "text-sm text-slate-400 mt-1"
-  }, "BESCOM \xB7 Smart Distribution Network Monitoring & Self-Healing Simulation"), /*#__PURE__*/React.createElement("div", {
+  }, "BESCOM · Smart Distribution Network Monitoring & Self-Healing Simulation"), /*#__PURE__*/React.createElement("div", {
     className: "mt-2 inline-flex items-center gap-2 text-[11px] text-slate-500 font-mono"
   }, /*#__PURE__*/React.createElement("span", {
     className: "badge-dot bg-healthy blip"
-  }), "SCADA-BESCOM-T9 \xB7 Theme 9")), /*#__PURE__*/React.createElement("form", {
+  }), "SCADA-BESCOM-T9 · Theme 9")), /*#__PURE__*/React.createElement("form", {
     onSubmit: submit,
     className: "bg-grid-card border border-grid-border rounded-xl p-6 shadow-2xl"
   }, /*#__PURE__*/React.createElement("div", {
@@ -1940,7 +2104,7 @@ function Login({
   }), err), /*#__PURE__*/React.createElement("button", {
     type: "submit",
     disabled: busy,
-    className: "w-full bg-restoration hover:bg-restoration/90 disabled:opacity-60 text-grid-bg font-semibold py-2.5 rounded-lg flex items-center justify-center gap-2 transition-colors"
+    className: "w-full bg-restoration hover:bg-restoration/90 disabled:opacity-60 text-grid-bg font-semibold py-2.5 rounded-lg flex items-center justify-center gap-2 transition-colors cursor-pointer shadow-lg shadow-cyan-950/40"
   }, busy ? /*#__PURE__*/React.createElement(Icon, {
     name: "refresh",
     className: "w-4 h-4 spin-slow"
@@ -1949,9 +2113,270 @@ function Login({
     className: "w-4 h-4"
   }), busy ? 'Authenticating…' : 'Enter Control Room'), /*#__PURE__*/React.createElement("div", {
     className: "text-[11px] text-slate-500 text-center"
-  }, "Demo credentials pre-filled \xB7 any valid email + 3+ char password accepted"))), /*#__PURE__*/React.createElement("div", {
+  }, "Two-Factor Verification Enabled · Press 'Enter Control Room' to request OTP code"))), /*#__PURE__*/React.createElement("div", {
     className: "mt-4 text-center text-[11px] text-slate-600"
-  }, "\xA9 BESCOM Control Room Simulator \xB7 Frontend mock build v1.0")));
+  }, "© BESCOM Control Room Simulator · SCADA Theme 9 Security")));
+}
+
+function OtpVerification({
+  email,
+  debugOtp,
+  onVerified,
+  onBack
+}) {
+  const {
+    actions
+  } = useGrid();
+  const [digits, setDigits] = useState(['', '', '', '', '', '']);
+  const [busy, setBusy] = useState(false);
+  const [resending, setResending] = useState(false);
+  const [err, setErr] = useState('');
+  const [countdown, setCountdown] = useState(300);
+  const [resendCooldown, setResendCooldown] = useState(45);
+  const [activeDebugOtp, setActiveDebugOtp] = useState(debugOtp || '');
+  const inputsRef = useRef([]);
+
+  useEffect(() => {
+    if (countdown <= 0) return;
+    const t = setInterval(() => setCountdown(c => Math.max(0, c - 1)), 1000);
+    return () => clearInterval(t);
+  }, [countdown]);
+
+  useEffect(() => {
+    if (resendCooldown <= 0) return;
+    const t = setInterval(() => setResendCooldown(c => Math.max(0, c - 1)), 1000);
+    return () => clearInterval(t);
+  }, [resendCooldown]);
+
+  useEffect(() => {
+    if (inputsRef.current[0]) {
+      inputsRef.current[0].focus();
+    }
+  }, []);
+
+  const handleChange = (index, val) => {
+    const clean = val.replace(/\D/g, '');
+    if (!clean) {
+      const copy = [...digits];
+      copy[index] = '';
+      setDigits(copy);
+      return;
+    }
+    const char = clean.slice(-1);
+    const copy = [...digits];
+    copy[index] = char;
+    setDigits(copy);
+    setErr('');
+    if (index < 5 && inputsRef.current[index + 1]) {
+      inputsRef.current[index + 1].focus();
+    }
+  };
+
+  const handleKeyDown = (index, e) => {
+    if (e.key === 'Backspace' && !digits[index] && index > 0 && inputsRef.current[index - 1]) {
+      inputsRef.current[index - 1].focus();
+    } else if (e.key === 'ArrowLeft' && index > 0 && inputsRef.current[index - 1]) {
+      inputsRef.current[index - 1].focus();
+    } else if (e.key === 'ArrowRight' && index < 5 && inputsRef.current[index + 1]) {
+      inputsRef.current[index + 1].focus();
+    }
+  };
+
+  const handlePaste = e => {
+    e.preventDefault();
+    const paste = (e.clipboardData.getData('text') || '').trim().replace(/\D/g, '').slice(0, 6);
+    if (!paste) return;
+    const copy = [...digits];
+    for (let i = 0; i < 6; i++) {
+      copy[i] = paste[i] || '';
+    }
+    setDigits(copy);
+    const nextIdx = Math.min(5, paste.length);
+    if (inputsRef.current[nextIdx]) {
+      inputsRef.current[nextIdx].focus();
+    }
+  };
+
+  const autoFillCode = codeToFill => {
+    const code = String(codeToFill || activeDebugOtp || '123456').slice(0, 6);
+    const copy = code.split('').slice(0, 6);
+    while (copy.length < 6) copy.push('');
+    setDigits(copy);
+    setErr('');
+    if (inputsRef.current[5]) {
+      inputsRef.current[5].focus();
+    }
+  };
+
+  const submit = async e => {
+    if (e) e.preventDefault();
+    const otp = digits.join('');
+    if (otp.length < 6) {
+      setErr('Please enter all 6 digits of the verification code.');
+      return;
+    }
+    setBusy(true);
+    setErr('');
+    const res = await actions.verifyOtp({
+      email,
+      otp
+    });
+    setBusy(false);
+    if (res.ok && res.user) {
+      onVerified(res.user);
+    } else {
+      setErr(res.error || 'Verification failed. Please check your code.');
+    }
+  };
+
+  const handleResend = async () => {
+    if (resendCooldown > 0 || resending) return;
+    setResending(true);
+    setErr('');
+    const res = await actions.resendOtp(email);
+    setResending(false);
+    if (res.ok) {
+      setResendCooldown(45);
+      setCountdown(300);
+      if (res.debug_otp) {
+        setActiveDebugOtp(res.debug_otp);
+      }
+    } else {
+      setErr(res.error || 'Failed to resend code.');
+    }
+  };
+
+  const fmtMinSec = s => {
+    const m = Math.floor(s / 60);
+    const sec = s % 60;
+    return `${m}:${sec.toString().padStart(2, '0')}`;
+  };
+
+  return /*#__PURE__*/React.createElement("div", {
+    className: "min-h-screen flex items-center justify-center p-4 grid-noise relative overflow-hidden"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "absolute inset-0 opacity-30 pointer-events-none"
+  }, /*#__PURE__*/React.createElement("svg", {
+    viewBox: "0 0 1000 600",
+    className: "w-full h-full"
+  }, [...Array(8)].map((_, i) => /*#__PURE__*/React.createElement("line", {
+    key: i,
+    x1: i * 130,
+    y1: "0",
+    x2: i * 130,
+    y2: "600",
+    stroke: "#15233B",
+    strokeWidth: "1"
+  })), [...Array(6)].map((_, i) => /*#__PURE__*/React.createElement("line", {
+    key: i,
+    x1: "0",
+    y1: i * 100,
+    x2: "1000",
+    y2: i * 100,
+    stroke: "#15233B",
+    strokeWidth: "1"
+  })))), /*#__PURE__*/React.createElement("div", {
+    className: "relative w-full max-w-md"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "text-center mb-6"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-grid-card border border-restoration/40 mb-3 shadow-lg shadow-cyan-950/40 relative"
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "shieldCheck",
+    className: "w-8 h-8 text-restoration"
+  }), /*#__PURE__*/React.createElement("span", {
+    className: "absolute -top-1 -right-1 flex h-3 w-3"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"
+  }), /*#__PURE__*/React.createElement("span", {
+    className: "relative inline-flex rounded-full h-3 w-3 bg-emerald-500"
+  }))), /*#__PURE__*/React.createElement("h1", {
+    className: "text-2xl font-bold text-slate-50"
+  }, "Two-Factor Authentication"), /*#__PURE__*/React.createElement("p", {
+    className: "text-sm text-slate-400 mt-1"
+  }, "BESCOM SCADA Operator Verification Step"), /*#__PURE__*/React.createElement("div", {
+    className: "mt-2 inline-flex items-center gap-2 text-[11px] text-slate-500 font-mono"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "badge-dot bg-healthy blip"
+  }), "Security Level: High · 2FA Protocol")), /*#__PURE__*/React.createElement("div", {
+    className: "bg-grid-card border border-grid-border rounded-xl p-6 md:p-8 shadow-2xl relative overflow-hidden space-y-5"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "bg-grid-panel border border-grid-border/80 rounded-lg p-3 text-center"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "text-xs text-slate-400 mb-1"
+  }, "A 6-digit verification code has been dispatched to:"), /*#__PURE__*/React.createElement("div", {
+    className: "inline-flex items-center gap-1.5 font-mono text-sm font-semibold text-cyan-400 bg-cyan-950/40 border border-cyan-800/40 rounded px-2.5 py-1"
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "mail",
+    className: "w-3.5 h-3.5 text-cyan-400"
+  }), email || "admin@bescom.sim")), activeDebugOtp && /*#__PURE__*/React.createElement("div", {
+    onClick: () => autoFillCode(activeDebugOtp),
+    className: "cursor-pointer group bg-emerald-950/30 hover:bg-emerald-950/50 border border-emerald-500/40 hover:border-emerald-500 rounded-lg p-2.5 text-xs text-emerald-300 flex items-center justify-between transition-all"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center gap-2"
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "mail",
+    className: "w-4 h-4 text-emerald-400"
+  }), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("span", {
+    className: "font-semibold block text-emerald-200"
+  }, "Dispatched Code: " + activeDebugOtp), /*#__PURE__*/React.createElement("span", {
+    className: "text-[10px] text-emerald-400/80"
+  }, "Click to auto-fill for instant test"))), /*#__PURE__*/React.createElement("span", {
+    className: "text-[11px] font-semibold bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded border border-emerald-500/30 group-hover:bg-emerald-500 group-hover:text-slate-900 transition-colors"
+  }, "Auto-fill")), /*#__PURE__*/React.createElement("form", {
+    onSubmit: submit,
+    className: "space-y-5"
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    className: "block text-xs uppercase tracking-wider text-slate-400 mb-2 font-semibold text-center"
+  }, "Enter 6-Digit Passcode"), /*#__PURE__*/React.createElement("div", {
+    className: "flex justify-center gap-2 sm:gap-2.5",
+    onPaste: handlePaste
+  }, digits.map((digit, i) => /*#__PURE__*/React.createElement("input", {
+    key: i,
+    ref: el => inputsRef.current[i] = el,
+    type: "text",
+    inputMode: "numeric",
+    maxLength: 1,
+    value: digit,
+    onChange: e => handleChange(i, e.target.value),
+    onKeyDown: e => handleKeyDown(i, e),
+    className: "w-11 h-13 sm:w-12 sm:h-14 text-center font-mono font-bold text-xl sm:text-2xl bg-grid-panel border " + (digit ? "border-restoration ring-1 ring-restoration/50 text-cyan-300" : "border-grid-border text-slate-100") + " rounded-lg focus:border-restoration focus:ring-2 focus:ring-restoration/60 focus:outline-none transition-all"
+  })))), /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center justify-between text-xs text-slate-400 px-1 pt-1"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center gap-1.5"
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "timer",
+    className: "w-3.5 h-3.5 text-amber-400"
+  }), /*#__PURE__*/React.createElement("span", null, "Expires in:"), /*#__PURE__*/React.createElement("span", {
+    className: "font-mono font-semibold " + (countdown < 60 ? "text-faulted animate-pulse" : "text-slate-200")
+  }, fmtMinSec(countdown))), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: handleResend,
+    disabled: resendCooldown > 0 || resending,
+    className: "text-restoration hover:text-restoration/80 disabled:text-slate-500 disabled:cursor-not-allowed font-medium transition-colors cursor-pointer"
+  }, resending ? "Resending…" : resendCooldown > 0 ? `Resend code in ${resendCooldown}s` : "Resend Code")), err && /*#__PURE__*/React.createElement("div", {
+    className: "text-xs text-faulted bg-faulted/10 border border-faulted/30 rounded-lg px-3 py-2 flex items-center gap-2"
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "alertCircle",
+    className: "w-4 h-4 shrink-0"
+  }), err), /*#__PURE__*/React.createElement("button", {
+    type: "submit",
+    disabled: busy || digits.join('').length < 6,
+    className: "w-full bg-restoration hover:bg-restoration/90 disabled:opacity-50 text-grid-bg font-semibold py-2.5 rounded-lg flex items-center justify-center gap-2 transition-colors cursor-pointer shadow-lg shadow-cyan-950/50"
+  }, busy ? /*#__PURE__*/React.createElement(Icon, {
+    name: "refresh",
+    className: "w-4 h-4 spin-slow"
+  }) : /*#__PURE__*/React.createElement(Icon, {
+    name: "check",
+    className: "w-4 h-4"
+  }), busy ? "Verifying OTP…" : "Verify & Connect to Dashboard"), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: onBack,
+    className: "w-full text-xs text-slate-400 hover:text-slate-200 text-center py-1 transition-colors cursor-pointer"
+  }, "← Back to Login / Change Email"))), /*#__PURE__*/React.createElement("div", {
+    className: "mt-4 text-center text-[11px] text-slate-600"
+  }, "© BESCOM Control Room Simulator · 2FA Security Enhanced")));
 }
 function Sidebar({
   page,
@@ -1998,7 +2423,8 @@ function TopBar({
   onMenu
 }) {
   const {
-    grid
+    grid,
+    backendConnected
   } = useGrid();
   const phase = grid.statusPhase;
   const phaseMeta = {
@@ -2059,6 +2485,10 @@ function TopBar({
     name: m.icon,
     className: "w-4 h-4"
   }), m.label), /*#__PURE__*/React.createElement("div", {
+    className: "hidden md:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-mono border " + (backendConnected ? "text-healthy border-healthy/40 bg-healthy/10" : "text-amber-400 border-amber-500/40 bg-amber-500/10")
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "badge-dot " + (backendConnected ? "bg-healthy blip" : "bg-warning")
+  }), backendConnected ? "Backend: Online (Port 5000)" : "Standalone Mode"), /*#__PURE__*/React.createElement("div", {
     className: "hidden md:flex items-center gap-2 text-xs text-slate-400"
   }, /*#__PURE__*/React.createElement(Icon, {
     name: "clock",
@@ -3725,12 +4155,50 @@ function Shell({
 }
 function App() {
   const [user, setUser] = useState(null);
-  return /*#__PURE__*/React.createElement(GridProvider, null, user ? /*#__PURE__*/React.createElement(Shell, {
-    user: user,
-    onLogout: () => setUser(null)
-  }) : /*#__PURE__*/React.createElement(Login, {
-    onLogin: setUser
-  }));
+  const [authStep, setAuthStep] = useState('credentials');
+  const [pendingEmail, setPendingEmail] = useState('admin@bescom.sim');
+  const [debugOtp, setDebugOtp] = useState('');
+
+  const handleProceedToOtp = ({ email, debugOtp }) => {
+    setPendingEmail(email);
+    setDebugOtp(debugOtp || '');
+    setAuthStep('otp');
+  };
+
+  const handleVerified = verifiedUser => {
+    setUser(verifiedUser);
+    setAuthStep('credentials');
+  };
+
+  const handleBackToLogin = () => {
+    setAuthStep('credentials');
+    setDebugOtp('');
+  };
+
+  const handleLogout = () => {
+    setUser(null);
+    setAuthStep('credentials');
+    setDebugOtp('');
+  };
+
+  return /*#__PURE__*/React.createElement(GridProvider, null,
+    user
+      ? /*#__PURE__*/React.createElement(Shell, {
+          user: user,
+          onLogout: handleLogout
+        })
+      : authStep === 'otp'
+        ? /*#__PURE__*/React.createElement(OtpVerification, {
+            email: pendingEmail,
+            debugOtp: debugOtp,
+            onVerified: handleVerified,
+            onBack: handleBackToLogin
+          })
+        : /*#__PURE__*/React.createElement(Login, {
+            onProceedToOtp: handleProceedToOtp,
+            onLogin: setUser
+          })
+  );
 }
 ReactDOM.createRoot(document.getElementById('root')).render(/*#__PURE__*/React.createElement(App, null));
 </script>

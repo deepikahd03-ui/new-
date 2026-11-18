@@ -1,0 +1,4206 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Fault to Recovery — BESCOM Smart Grid Monitoring &amp; Self-Healing Simulation</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script>
+  tailwind.config = {
+    darkMode: 'class',
+    theme: {
+      extend: {
+        colors: {
+          'grid-bg': '#0B1120',
+          'grid-card': '#1E293B',
+          'grid-surface': '#172033',
+          'grid-panel': '#0F1A2E',
+          'grid-border': '#334155',
+          'grid-muted': '#64748B',
+          'healthy': '#10B981',
+          'warning': '#F59E0B',
+          'faulted': '#EF4444',
+          'isolated': '#64748B',
+          'restoration': '#06B6D4',
+        },
+        fontFamily: {
+          sans: ['Inter', 'system-ui', 'Segoe UI', 'Roboto', 'sans-serif'],
+          mono: ['JetBrains Mono', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
+        },
+      },
+    },
+  };
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  html, body { background: #0B1120; }
+  body { font-family: 'Inter', system-ui, sans-serif; color: #E2E8F0; margin: 0; }
+  #root { min-height: 100vh; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: #0B1120; }
+  ::-webkit-scrollbar-thumb { background: #334155; border-radius: 6px; }
+  ::-webkit-scrollbar-thumb:hover { background: #475569; }
+  .no-scrollbar::-webkit-scrollbar { display: none; }
+
+  @keyframes pulseRed { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+  @keyframes flowDash { to { stroke-dashoffset: -24; } }
+  @keyframes flowGlow { 0%,100% { opacity: .7; } 50% { opacity: 1; } }
+  @keyframes spinSlow { to { transform: rotate(360deg); } }
+  @keyframes fadeInUp { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+  @keyframes blip { 0%,100% { transform: scale(1); opacity:.9; } 50% { transform: scale(1.25); opacity:1; } }
+  @keyframes slideIn { from { transform: translateX(100%); } to { transform: translateX(0); } }
+
+  .faulted-line { animation: pulseRed 1s ease-in-out infinite; }
+  .restoration-line { stroke-dasharray: 10 6; animation: flowDash 1.1s linear infinite; }
+  .restoration-glow { animation: flowGlow 1.4s ease-in-out infinite; }
+  .spin-slow { animation: spinSlow 8s linear infinite; transform-origin: center; }
+  .fade-in { animation: fadeInUp .35s ease-out both; }
+  .blip { animation: blip 1.6s ease-in-out infinite; transform-origin: center; transform-box: fill-box; }
+  .slide-in { animation: slideIn .3s ease-out both; }
+
+  .grid-noise {
+    background-image:
+      radial-gradient(circle at 20% 20%, rgba(56,189,248,0.06), transparent 40%),
+      radial-gradient(circle at 80% 60%, rgba(16,185,129,0.05), transparent 45%);
+  }
+  .card-glow:hover { box-shadow: 0 0 0 1px rgba(56,189,248,0.25), 0 8px 30px rgba(0,0,0,0.45); }
+  .nav-active { background: linear-gradient(90deg, rgba(6,182,212,0.18), transparent); border-left: 2px solid #06B6D4; }
+  .badge-dot { width: 8px; height: 8px; border-radius: 9999px; display: inline-block; }
+  .font-mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+  table.telemetry th { position: sticky; top: 0; background: #172033; z-index: 2; }
+  .loader-ring { border: 3px solid #1E293B; border-top: 3px solid #06B6D4; border-radius: 50%; width: 42px; height: 42px; animation: spinSlow 1s linear infinite; }
+</style>
+</head>
+<body class="grid-noise">
+<div id="root">
+  <div style="display:flex;align-items:center;justify-content:center;height:100vh;flex-direction:column;gap:14px;">
+    <div class="loader-ring"></div>
+    <div style="color:#94A3B8;font-size:14px;">Booting Fault-to-Recovery control room…</div>
+  </div>
+</div>
+
+<script>
+function _extends() { return _extends = Object.assign ? Object.assign.bind() : function (n) { for (var e = 1; e < arguments.length; e++) { var t = arguments[e]; for (var r in t) ({}).hasOwnProperty.call(t, r) && (n[r] = t[r]); } return n; }, _extends.apply(null, arguments); }
+/* =====================================================================
+   FAULT TO RECOVERY — BESCOM Theme 9
+   Smart Electricity Distribution Network Monitoring & Self-Healing Sim
+   ---------------------------------------------------------------------
+   Frontend-first architecture:
+     - gridData.js   (centralized mock state / context seed)
+     - apiService.js (clean API service layer — swap for Flask REST later)
+     - React + Tailwind + Lucide-style inline SVG icons, no build step
+   ===================================================================== */
+const {
+  createContext,
+  useContext,
+  useState,
+  useEffect,
+  useRef,
+  useMemo,
+  useCallback
+} = React;
+
+/* ---------------------------------------------------------------------
+   ICON SET  (lucide-style inline SVG, 24x24, stroke based)
+--------------------------------------------------------------------- */
+const ICONS = {
+  activity: '<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>',
+  zap: '<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>',
+  alertTriangle: '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line>',
+  alertCircle: '<circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line>',
+  checkCircle: '<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline>',
+  xCircle: '<circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line>',
+  ban: '<circle cx="12" cy="12" r="10"></circle><path d="m4.93 4.93 14.14 14.14"></path>',
+  gauge: '<path d="m12 14 4-4"></path><path d="M3.34 19a10 10 0 1 1 17.32 0"></path>',
+  home: '<path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline>',
+  settings: '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path><circle cx="12" cy="12" r="3"></circle>',
+  bell: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"></path><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"></path>',
+  power: '<path d="M12 2v10"></path><path d="M18.4 6.6a9 9 0 1 1-12.77.04"></path>',
+  barChart: '<path d="M3 3v18h18"></path><path d="M18 17V9"></path><path d="M13 17V5"></path><path d="M8 17v-3"></path>',
+  gitBranch: '<line x1="6" y1="3" x2="6" y2="15"></line><circle cx="18" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><path d="M18 9a9 9 0 0 1-9 9"></path>',
+  siren: '<path d="M7 18v-6a5 5 0 0 1 10 0v6"></path><path d="M5 21a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-5a1 1 0 0 0-1-1H6a1 1 0 0 0-1 1z"></path><path d="M12 2v2"></path><path d="m4.93 4.93 1.41 1.41"></path><path d="M2 8h2"></path><path d="M20 8h2"></path><path d="m17.66 6.34 1.41-1.41"></path>',
+  wrench: '<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>',
+  shieldCheck: '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"></path><path d="m9 12 2 2 4-4"></path>',
+  shield: '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"></path>',
+  play: '<polygon points="6 3 20 12 6 21 6 3"></polygon>',
+  rotateCcw: '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path>',
+  refresh: '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path><path d="M21 3v5h-5"></path><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"></path><path d="M3 21v-5h5"></path>',
+  filter: '<polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon>',
+  search: '<circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path>',
+  logOut: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line>',
+  menu: '<line x1="4" x2="20" y1="12" y2="12"></line><line x1="4" x2="20" y1="6" y2="6"></line><line x1="4" x2="20" y1="18" y2="18"></line>',
+  eye: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"></path><circle cx="12" cy="12" r="3"></circle>',
+  clock: '<circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline>',
+  users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M22 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path>',
+  layers: '<polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline>',
+  cpu: '<rect width="16" height="16" x="4" y="4" rx="2"></rect><rect width="6" height="6" x="9" y="9" rx="1"></rect><path d="M15 2v2"></path><path d="M15 20v2"></path><path d="M2 15h2"></path><path d="M2 9h2"></path><path d="M20 15h2"></path><path d="M20 9h2"></path><path d="M9 2v2"></path><path d="M9 20v2"></path>',
+  trendingUp: '<polyline points="22 7 13.5 15.5 8.5 10.5 2 17"></polyline><polyline points="16 7 22 7 22 13"></polyline>',
+  trendingDown: '<polyline points="22 17 13.5 8.5 8.5 13.5 2 7"></polyline><polyline points="16 17 22 17 22 11"></polyline>',
+  arrowRight: '<line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline>',
+  chevronRight: '<polyline points="9 18 15 12 9 6"></polyline>',
+  map: '<polygon points="3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21 3 6"></polygon><line x1="9" y1="3" x2="9" y2="18"></line><line x1="15" y1="6" x2="15" y2="21"></line>',
+  mapPin: '<path d="M20 10c0 4.993-5.539 10.193-7.399 11.799a1 1 0 0 1-1.202 0C9.539 20.193 4 14.993 4 10a8 8 0 0 1 16 0"></path><circle cx="12" cy="10" r="3"></circle>',
+  radio: '<path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"></path><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"></path><circle cx="12" cy="12" r="2"></circle><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"></path><path d="M19.1 4.9C23 8.8 23 15.2 19.1 19.1"></path>',
+  network: '<rect x="16" y="16" width="6" height="6" rx="1"></rect><rect x="2" y="16" width="6" height="6" rx="1"></rect><rect x="9" y="2" width="6" height="6" rx="1"></rect><path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"></path><path d="M12 12V9"></path>',
+  circuitBoard: '<rect width="18" height="18" x="3" y="3" rx="2"></rect><path d="M11 9h4a2 2 0 0 0 2-2V3"></path><circle cx="9" cy="9" r="2"></circle><path d="M7 21v-4a2 2 0 0 1 2-2h4"></path>',
+  lightbulb: '<path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"></path><path d="M9 18h6"></path><path d="M10 22h4"></path>',
+  route: '<circle cx="6" cy="19" r="3"></circle><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"></path><circle cx="18" cy="5" r="3"></circle>',
+  database: '<ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M3 5V19A9 3 0 0 0 21 19V5"></path><path d="M3 12A9 3 0 0 0 21 12"></path>',
+  server: '<rect width="20" height="8" x="2" y="2" rx="2" ry="2"></rect><rect width="20" height="8" x="2" y="14" rx="2" ry="2"></rect><line x1="6" x2="6.01" y1="6" y2="6"></line><line x1="6" x2="6.01" y1="18" y2="18"></line>',
+  list: '<line x1="8" x2="21" y1="6" y2="6"></line><line x1="8" x2="21" y1="12" y2="12"></line><line x1="8" x2="21" y1="18" y2="18"></line><line x1="3" x2="3.01" y1="6" y2="6"></line><line x1="3" x2="3.01" y1="12" y2="12"></line><line x1="3" x2="3.01" y1="18" y2="18"></line>',
+  battery: '<rect width="16" height="10" x="2" y="7" rx="2" ry="2"></rect><line x1="22" x2="22" y1="11" y2="13"></line>',
+  x: '<path d="M18 6 6 18"></path><path d="m6 6 12 12"></path>',
+  check: '<polyline points="20 6 9 17 4 12"></polyline>',
+  plus: '<path d="M5 12h14"></path><path d="M12 5v14"></path>',
+  minus: '<path d="M5 12h14"></path>',
+  terminal: '<polyline points="4 17 10 11 4 5"></polyline><line x1="12" x2="20" y1="19" y2="19"></line>',
+  timer: '<line x1="10" x2="14" y1="2" y2="2"></line><line x1="12" x2="15" y1="14" y2="11"></line><circle cx="12" cy="14" r="8"></circle>',
+  crosshair: '<circle cx="12" cy="12" r="8"></circle><line x1="22" x2="18" y1="12" y2="12"></line><line x1="6" x2="2" y1="12" y2="12"></line><line x1="12" x1="12" y1="2" y2="6"></line><line x1="12" x1="12" y1="18" y2="22"></line>',
+  target: '<circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="12" r="6"></circle><circle cx="12" cy="12" r="2"></circle>',
+  factory: '<path d="M2 20a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8l-7 5V8l-7 5V4a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z"></path><path d="M17 18h1"></path><path d="M12 18h1"></path><path d="M7 18h1"></path>',
+  plug: '<path d="M12 22v-5"></path><path d="M9 8V2"></path><path d="M15 8V2"></path><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"></path>',
+  command: '<path d="M15 6a3 3 0 1 1 3 3h-9a3 3 0 1 1 3-3v12a3 3 0 1 1-3-3h9a3 3 0 1 1-3 3"></path>',
+  bolt: '<circle cx="12" cy="12" r="10"></circle><path d="m4.9 4.9 14.2 14.2"></path>',
+  fileText: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="8" x2="16" y1="13" y2="13"></line><line x1="8" x2="16" y1="17" y2="17"></line><line x1="8" x2="10" y1="9" y2="9"></line>',
+  zapOff: '<polygon points="12.41 2.58 2 14.59 11 14 10.59 21.58 13.41 19.42 22 6.41 17 7 12.41 2.58"></polygon><line x1="2" x2="22" y1="2" y2="22"></line>',
+  mail: '<rect width="20" height="16" x="2" y="4" rx="2"></rect><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"></path>',
+  key: '<path d="m21 2-2 2m-1.5 1.5L16 7l-1.5-1.5L13 7l-1.5-1.5L10 7 8.5 5.5 2 12v6h6l6.5-6.5"></path><circle cx="16.5" cy="7.5" r=".5" fill="currentColor"></circle>'
+};
+function Icon({
+  name,
+  className = 'w-5 h-5',
+  strokeWidth = 2,
+  ...rest
+}) {
+  const inner = ICONS[name];
+  if (!inner) return null;
+  // Derive concrete width/height (px) from Tailwind w-/h- utilities.
+  // WHY: when this <svg> is nested INSIDE the map's outer <svg viewBox="0 0 1000 600">,
+  // CSS width/height (w-4 h-4 => 16px) is NOT honoured for a nested <svg> that has no
+  // explicit width/height attribute — the nested svg defaults to 100% of the parent
+  // SVG viewport, blowing every icon up to ~363px and drawing its 24-unit path strokes
+  // as thick white-ish shapes that cover the network. Setting explicit px width/height
+  // attributes gives the nested svg a real intrinsic size and the icon renders at the
+  // intended ~16-20px. This is purely visual; no logic, data, or layout is changed.
+  const sizeMap = { 'w-3': 12, 'w-3.5': 14, 'w-4': 16, 'w-5': 20, 'w-6': 24, 'w-8': 32, 'w-12': 48, 'w-20': 80 };
+  const wMatch = className && className.match(/\bw-(\d+(?:\.\d+)?)\b/);
+  const hMatch = className && className.match(/\bh-(\d+(?:\.\d+)?)\b/);
+  const wVal = wMatch ? (sizeMap['w-' + wMatch[1]] || parseFloat(wMatch[1]) * 4) : null;
+  const hVal = hMatch ? (sizeMap['h-' + hMatch[1]] || parseFloat(hMatch[1]) * 4) : null;
+  const sizeAttr = {};
+  if (wVal != null) sizeAttr.width = wVal;
+  if (hVal != null) sizeAttr.height = hVal;
+  return /*#__PURE__*/React.createElement("svg", _extends({
+    xmlns: "http://www.w3.org/2000/svg",
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: strokeWidth,
+    strokeLinecap: "round",
+    strokeLinejoin: "round",
+    className: className
+  }, sizeAttr, {
+    dangerouslySetInnerHTML: {
+      __html: inner
+    }
+  }, rest));
+}
+
+/* ---------------------------------------------------------------------
+   gridData.js  —  centralized mock state (network topology + telemetry)
+--------------------------------------------------------------------- */
+const NOW = () => Date.now();
+const fmtTime = ts => new Date(ts).toLocaleTimeString('en-GB', {
+  hour12: false
+});
+const fmtDateTime = ts => {
+  const d = new Date(ts);
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+};
+const GRID_DATA_SEED = {
+  meta: {
+    name: 'BESCOM Virtual Distribution Network',
+    region: 'Bengaluru — Circle 4 (BESCOM)',
+    operator: 'Control Room Operator',
+    scada: 'SCADA-BESCOM-T9',
+    version: '1.0.0'
+  },
+  nodes: [{
+    id: 'SUB-A',
+    name: 'Substation Alpha',
+    type: 'substation',
+    x: 90,
+    y: 300,
+    voltageKV: 33,
+    capacityMVA: 25,
+    baseLoad: 9.2
+  }, {
+    id: 'SUB-B',
+    name: 'Substation Beta',
+    type: 'substation',
+    x: 910,
+    y: 300,
+    voltageKV: 33,
+    capacityMVA: 25,
+    baseLoad: 6.4
+  }, {
+    id: 'F1',
+    name: 'Feeder F1',
+    type: 'feeder',
+    x: 250,
+    y: 150,
+    voltageKV: 11,
+    capacityMW: 8,
+    feederOf: 'SUB-A'
+  }, {
+    id: 'F2',
+    name: 'Feeder F2',
+    type: 'feeder',
+    x: 250,
+    y: 300,
+    voltageKV: 11,
+    capacityMW: 8,
+    feederOf: 'SUB-A'
+  }, {
+    id: 'F3',
+    name: 'Feeder F3',
+    type: 'feeder',
+    x: 750,
+    y: 470,
+    voltageKV: 11,
+    capacityMW: 8,
+    feederOf: 'SUB-B'
+  }, {
+    id: 'DT-101',
+    name: 'DT-101',
+    type: 'transformer',
+    x: 470,
+    y: 150,
+    voltageKV: 0.433,
+    capacityKVA: 1000
+  }, {
+    id: 'DT-102',
+    name: 'DT-102',
+    type: 'transformer',
+    x: 470,
+    y: 250,
+    voltageKV: 0.433,
+    capacityKVA: 1500
+  }, {
+    id: 'DT-103',
+    name: 'DT-103',
+    type: 'transformer',
+    x: 470,
+    y: 350,
+    voltageKV: 0.433,
+    capacityKVA: 1500
+  }, {
+    id: 'DT-104',
+    name: 'DT-104',
+    type: 'transformer',
+    x: 600,
+    y: 470,
+    voltageKV: 0.433,
+    capacityKVA: 1250
+  }, {
+    id: 'AREA-A',
+    name: 'Area A',
+    type: 'consumer',
+    x: 720,
+    y: 150,
+    consumers: 1180,
+    loadMW: 1.78,
+    tag: 'Residential'
+  }, {
+    id: 'AREA-B',
+    name: 'Area B',
+    type: 'consumer',
+    x: 720,
+    y: 250,
+    consumers: 1860,
+    loadMW: 2.12,
+    tag: 'Mixed Commercial'
+  }, {
+    id: 'AREA-C',
+    name: 'Area C',
+    type: 'consumer',
+    x: 720,
+    y: 350,
+    consumers: 1640,
+    loadMW: 1.94,
+    tag: 'Industrial Light'
+  }, {
+    id: 'AREA-D',
+    name: 'Area D',
+    type: 'consumer',
+    x: 820,
+    y: 470,
+    consumers: 1420,
+    loadMW: 1.61,
+    tag: 'Residential'
+  }],
+  edges: [{
+    id: 'E-SUBA-F1',
+    from: 'SUB-A',
+    to: 'F1',
+    name: '33kV Incomer A→F1',
+    switch: 'SW-A1',
+    switchState: 'closed',
+    status: 'healthy',
+    telemetry: {
+      voltageKV: 33.0,
+      currentA: 188,
+      loadPct: 46,
+      powerMW: 3.0
+    }
+  }, {
+    id: 'E-SUBA-F2',
+    from: 'SUB-A',
+    to: 'F2',
+    name: '33kV Incomer A→F2',
+    switch: 'SW-A2',
+    switchState: 'closed',
+    status: 'healthy',
+    telemetry: {
+      voltageKV: 33.0,
+      currentA: 318,
+      loadPct: 71,
+      powerMW: 4.5
+    }
+  }, {
+    id: 'E-SUBB-F3',
+    from: 'SUB-B',
+    to: 'F3',
+    name: '33kV Incomer B→F3',
+    switch: 'SW-B3',
+    switchState: 'closed',
+    status: 'healthy',
+    telemetry: {
+      voltageKV: 33.0,
+      currentA: 152,
+      loadPct: 38,
+      powerMW: 2.4
+    }
+  }, {
+    id: 'E-F1-DT101',
+    from: 'F1',
+    to: 'DT-101',
+    name: '11kV Lateral F1→DT-101',
+    switch: 'SW-1',
+    switchState: 'closed',
+    status: 'healthy',
+    telemetry: {
+      voltageKV: 11.0,
+      currentA: 142,
+      loadPct: 58,
+      powerMW: 1.78
+    }
+  }, {
+    id: 'E-F2-DT102',
+    from: 'F2',
+    to: 'DT-102',
+    name: '11kV Lateral F2→DT-102',
+    switch: 'SW-2',
+    switchState: 'closed',
+    status: 'healthy',
+    telemetry: {
+      voltageKV: 11.0,
+      currentA: 196,
+      loadPct: 73,
+      powerMW: 2.12
+    }
+  }, {
+    id: 'E-F2-DT103',
+    from: 'F2',
+    to: 'DT-103',
+    name: '11kV Lateral F2→DT-103',
+    switch: 'SW-3',
+    switchState: 'closed',
+    status: 'healthy',
+    telemetry: {
+      voltageKV: 11.0,
+      currentA: 178,
+      loadPct: 68,
+      powerMW: 1.94
+    }
+  }, {
+    id: 'E-F3-DT104',
+    from: 'F3',
+    to: 'DT-104',
+    name: '11kV Lateral F3→DT-104',
+    switch: 'SW-4',
+    switchState: 'closed',
+    status: 'healthy',
+    telemetry: {
+      voltageKV: 11.0,
+      currentA: 130,
+      loadPct: 52,
+      powerMW: 1.61
+    }
+  }, {
+    id: 'E-TS1',
+    from: 'F2',
+    to: 'F3',
+    name: 'Tie-Line TS-1 (F2↔F3)',
+    switch: 'TS-1',
+    isTie: true,
+    switchState: 'open',
+    status: 'isolated',
+    telemetry: {
+      voltageKV: 0.0,
+      currentA: 0,
+      loadPct: 0,
+      powerMW: 0
+    }
+  }, {
+    id: 'E-DT101-A',
+    from: 'DT-101',
+    to: 'AREA-A',
+    name: 'LV Service DT-101→Area A',
+    switch: 'SW-5',
+    switchState: 'closed',
+    status: 'healthy',
+    telemetry: {
+      voltageKV: 0.433,
+      currentA: 410,
+      loadPct: 58,
+      powerMW: 1.78
+    }
+  }, {
+    id: 'E-DT102-B',
+    from: 'DT-102',
+    to: 'AREA-B',
+    name: 'LV Service DT-102→Area B',
+    switch: 'SW-6',
+    switchState: 'closed',
+    status: 'healthy',
+    telemetry: {
+      voltageKV: 0.433,
+      currentA: 560,
+      loadPct: 73,
+      powerMW: 2.12
+    }
+  }, {
+    id: 'E-DT103-C',
+    from: 'DT-103',
+    to: 'AREA-C',
+    name: 'LV Service DT-103→Area C',
+    switch: 'SW-7',
+    switchState: 'closed',
+    status: 'healthy',
+    telemetry: {
+      voltageKV: 0.433,
+      currentA: 512,
+      loadPct: 68,
+      powerMW: 1.94
+    }
+  }, {
+    id: 'E-DT104-D',
+    from: 'DT-104',
+    to: 'AREA-D',
+    name: 'LV Service DT-104→Area D',
+    switch: 'SW-8',
+    switchState: 'closed',
+    status: 'healthy',
+    telemetry: {
+      voltageKV: 0.433,
+      currentA: 380,
+      loadPct: 52,
+      powerMW: 1.61
+    }
+  }],
+  faults: [],
+  anomalies: [],
+  events: [],
+  relaySequence: [],
+  activeFaultId: null,
+  restorationPlan: null,
+  restorationExecuted: false,
+  restorationPath: [],
+  statusPhase: 'healthy',
+  // healthy | fault_detected | localised | planning | restoring | restored | no_route
+  telemetryHistory: {
+    F1: [],
+    F2: [],
+    F3: []
+  },
+  kpis: {
+    gridHealthPct: 100,
+    activeFeeders: 3,
+    affectedConsumers: 0,
+    avgRestorationSec: 0,
+    totalFaults: 0,
+    restoredFaults: 0
+  }
+};
+
+/* ---------------------------------------------------------------------
+   Graph engine — power flow recompute + downstream analysis
+--------------------------------------------------------------------- */
+function clone(g) {
+  return JSON.parse(JSON.stringify(g));
+}
+function buildAdjacency(edges) {
+  const adj = {};
+  edges.forEach(e => {
+    const blocked = e.status === 'faulted' || e.switchState === 'open';
+    if (!blocked) {
+      (adj[e.from] = adj[e.from] || []).push({
+        edge: e,
+        to: e.to
+      });
+      if (e.isTie) (adj[e.to] = adj[e.to] || []).push({
+        edge: e,
+        to: e.from
+      });
+    }
+  });
+  return adj;
+}
+function computePoweredSet(grid) {
+  const adj = buildAdjacency(grid.edges);
+  const powered = new Set();
+  const via = {};
+  const q = grid.nodes.filter(n => n.type === 'substation').map(n => n.id);
+  q.forEach(id => powered.add(id));
+  while (q.length) {
+    const cur = q.shift();
+    (adj[cur] || []).forEach(({
+      edge,
+      to
+    }) => {
+      if (!powered.has(to)) {
+        powered.add(to);
+        via[to] = edge.id;
+        q.push(to);
+      }
+    });
+  }
+  return {
+    powered,
+    via
+  };
+}
+function downstreamNodes(grid, fromEdgeId) {
+  // nodes downstream of the given edge, ignoring tie (open) and faulted edges
+  const start = grid.edges.find(e => e.id === fromEdgeId);
+  if (!start) return [];
+  const adj = {};
+  grid.edges.forEach(e => {
+    if (e.id === fromEdgeId) return;
+    if (e.status === 'faulted' || e.switchState === 'open') return;
+    (adj[e.from] = adj[e.from] || []).push(e.to);
+    if (e.isTie) (adj[e.to] = adj[e.to] || []).push(e.from);
+  });
+  const seen = new Set([start.to]);
+  const q = [start.to];
+  while (q.length) {
+    const c = q.shift();
+    (adj[c] || []).forEach(t => {
+      if (!seen.has(t)) {
+        seen.add(t);
+        q.push(t);
+      }
+    });
+  }
+  return [...seen];
+}
+function recomputeGrid(grid) {
+  const {
+    powered
+  } = computePoweredSet(grid);
+  // Edge visual status
+  grid.edges.forEach(e => {
+    if (e.status === 'faulted') return;
+    if (grid.restorationPath.includes(e.id)) {
+      e.status = 'restoration';
+      return;
+    }
+    if (e.isTie && e.switchState === 'open') {
+      e.status = 'isolated';
+      return;
+    }
+    const toPowered = powered.has(e.to);
+    if (!toPowered) {
+      e.status = 'isolated';
+    } else {
+      const lp = e.telemetry.loadPct;
+      e.status = lp >= 90 ? 'warning' : lp >= 78 ? 'warning' : 'healthy';
+    }
+  });
+  // Node powered + telemetry zeroing for isolated
+  grid.nodes.forEach(n => {
+    n.powered = powered.has(n.id);
+  });
+  grid.edges.forEach(e => {
+    if (e.status === 'isolated' || e.status === 'faulted') {
+      if (e.status === 'faulted') {/* keep spike set by trigger */} else {
+        e.telemetry.voltageKV = 0;
+        e.telemetry.currentA = 0;
+        e.telemetry.loadPct = 0;
+        e.telemetry.powerMW = 0;
+      }
+    }
+  });
+  // Affected areas
+  grid.affectedAreas = grid.nodes.filter(n => n.type === 'consumer' && !powered.has(n.id)).map(n => ({
+    id: n.id,
+    name: n.name,
+    consumers: n.consumers,
+    loadMW: n.loadMW,
+    tag: n.tag
+  }));
+  // KPIs
+  const totalEdges = grid.edges.filter(e => !e.isTie).length;
+  const healthyEdges = grid.edges.filter(e => !e.isTie && e.status === 'healthy').length;
+  const activeFeeders = grid.nodes.filter(n => n.type === 'feeder' && powered.has(n.id)).length;
+  const affectedConsumers = grid.affectedAreas.reduce((s, a) => s + a.consumers, 0);
+  const restored = grid.events.filter(ev => ev.outcome === 'restored').length;
+  const restoredDurations = grid.events.filter(ev => ev.outcome === 'restored' && ev.durationSec != null).map(ev => ev.durationSec);
+  const avg = restoredDurations.length ? Math.round(restoredDurations.reduce((s, d) => s + d, 0) / restoredDurations.length) : 0;
+  grid.kpis = {
+    gridHealthPct: totalEdges ? Math.round(healthyEdges / totalEdges * 100) : 100,
+    activeFeeders,
+    affectedConsumers,
+    avgRestorationSec: avg,
+    totalFaults: grid.events.filter(ev => ev.type === 'fault').length,
+    restoredFaults: restored
+  };
+  return grid;
+}
+
+/* ---------------------------------------------------------------------
+   apiService.js  —  clean API service layer (mock now, Flask REST later)
+   Each method returns a Promise. Swap internals to fetch() in Phase 2.
+--------------------------------------------------------------------- */
+const API_BASE = (typeof window !== 'undefined' && (window.location.protocol === 'file:' || (window.location.port && window.location.port !== '5000')))
+  ? 'http://localhost:5000/api'
+  : '/api';
+
+const apiService = {
+  _store: null,
+  _backendOnline: null,
+  _pendingOtp: null,
+
+  _init() {
+    if (!this._store) this._store = clone(GRID_DATA_SEED);
+    this._store = recomputeGrid(this._store);
+    return this._store;
+  },
+  _snap() {
+    return clone(this._init());
+  },
+  _delay(ms = 280) {
+    return new Promise(r => setTimeout(r, ms));
+  },
+  _logEvent(ev) {
+    this._init();
+    this._store.events.unshift({
+      id: 'EV-' + (this._store.events.length + 1) + '-' + Math.random().toString(36).slice(2, 6),
+      ts: NOW(),
+      ...ev
+    });
+  },
+
+  async checkBackend() {
+    try {
+      const res = await fetch(`${API_BASE}/health`);
+      if (res.ok) {
+        this._backendOnline = true;
+        return true;
+      }
+    } catch (e) {
+      this._backendOnline = false;
+    }
+    return false;
+  },
+
+  async login(creds) {
+    try {
+      const res = await fetch(`${API_BASE}/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(creds)
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        return { ok: false, error: data.error || 'Invalid credentials' };
+      }
+      this._backendOnline = true;
+      return data;
+    } catch (err) {
+      console.warn('Backend login request failed, falling back to simulated authentication:', err);
+      this._backendOnline = false;
+      const email = creds && creds.email || '';
+      const ok = email && creds.password && creds.password.length >= 3;
+      if (!ok) return { ok: false, error: 'Invalid credentials. Use admin@bescom.sim / demo123.' };
+      const code = Math.floor(100000 + Math.random() * 900000).toString();
+      this._pendingOtp = { email, code, exp: Date.now() + 300000 };
+      return {
+        ok: true,
+        requires_otp: true,
+        email,
+        message: 'Verification passcode dispatched to ' + email,
+        debug_otp: code,
+        method: 'simulated'
+      };
+    }
+  },
+
+  async verifyOtp({ email, otp }) {
+    try {
+      const res = await fetch(`${API_BASE}/auth/verify-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, otp })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        return { ok: false, error: data.error || 'Invalid verification code.' };
+      }
+      this._backendOnline = true;
+      return data;
+    } catch (err) {
+      console.warn('Backend verify-otp failed, falling back to simulated validation:', err);
+      this._backendOnline = false;
+      if (this._pendingOtp && this._pendingOtp.email === email) {
+        if (Date.now() > this._pendingOtp.exp) {
+          return { ok: false, error: 'Verification code has expired. Please request a new code.' };
+        }
+        if (this._pendingOtp.code === otp || otp === '123456') {
+          return {
+            ok: true,
+            token: 'demo.' + btoa(email).replace(/=/g, ''),
+            user: { email, name: 'Grid Operator', role: 'Shift Engineer', station: 'BESCOM Circle 4' }
+          };
+        }
+      }
+      if (otp === '123456') {
+        return {
+          ok: true,
+          token: 'demo.' + btoa(email).replace(/=/g, ''),
+          user: { email, name: 'Grid Operator', role: 'Shift Engineer', station: 'BESCOM Circle 4' }
+        };
+      }
+      return { ok: false, error: 'Incorrect verification code. Please check your email and try again.' };
+    }
+  },
+
+  async resendOtp(email) {
+    try {
+      const res = await fetch(`${API_BASE}/auth/resend-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        return { ok: false, error: data.error || 'Failed to resend OTP.' };
+      }
+      this._backendOnline = true;
+      return data;
+    } catch (err) {
+      const code = Math.floor(100000 + Math.random() * 900000).toString();
+      this._pendingOtp = { email, code, exp: Date.now() + 300000 };
+      return { ok: true, message: 'New verification passcode sent to email.', debug_otp: code, method: 'simulated' };
+    }
+  },
+
+  async getGridState() {
+    try {
+      const res = await fetch(`${API_BASE}/network/state`);
+      if (res.ok) {
+        const state = await res.json();
+        this._backendOnline = true;
+        this._store = state;
+        return state;
+      }
+    } catch (e) {
+      this._backendOnline = false;
+    }
+    await this._delay(80);
+    return this._snap();
+  },
+
+  async getTelemetryHistory(feederId) {
+    if (this._store && this._store.telemetryHistory && this._store.telemetryHistory[feederId]) {
+      return { feederId, history: this._store.telemetryHistory[feederId] };
+    }
+    await this._delay(60);
+    return {
+      feederId,
+      history: this._snap().telemetryHistory[feederId] || []
+    };
+  },
+
+  async tickTelemetry() {
+    try {
+      const res = await fetch(`${API_BASE}/network/state`);
+      if (res.ok) {
+        const state = await res.json();
+        this._backendOnline = true;
+        this._store = state;
+        return state;
+      }
+    } catch (e) {
+      this._backendOnline = false;
+    }
+    // Local fallback
+    const g = this._init();
+    g.edges.forEach(e => {
+      if (e.isTie) return;
+      if (e.status === 'healthy' || e.status === 'warning' || e.status === 'restoration') {
+        const t = e.telemetry;
+        const j = (v, p) => Math.max(0, v + (Math.random() - 0.5) * v * p);
+        t.voltageKV = +(t.voltageKV * (1 + (Math.random() - 0.5) * 0.012)).toFixed(2);
+        t.currentA = Math.round(j(t.currentA, 0.04));
+        t.loadPct = Math.max(0, Math.min(100, Math.round(t.loadPct + (Math.random() - 0.5) * 2.2)));
+        t.powerMW = +(t.currentA * t.voltageKV * 1.732 / 1000).toFixed(2);
+        if (t.loadPct >= 78) e.status = 'warning'; else if (e.status === 'warning') e.status = 'healthy';
+      }
+    });
+    ['F1', 'F2', 'F3'].forEach(fid => {
+      const edge = g.edges.find(e => e.to === fid) || g.edges.find(e => e.from === fid);
+      const src = edge ? edge.telemetry : { voltageKV: 0, currentA: 0, loadPct: 0, powerMW: 0 };
+      g.telemetryHistory[fid] = g.telemetryHistory[fid] || [];
+      g.telemetryHistory[fid].push({
+        t: NOW(),
+        v: src.voltageKV,
+        a: src.currentA,
+        p: src.powerMW,
+        load: src.loadPct
+      });
+      if (g.telemetryHistory[fid].length > 30) g.telemetryHistory[fid].shift();
+    });
+    this._store = recomputeGrid(g);
+    return this._snap();
+  },
+
+  async triggerScenario(scenarioId) {
+    try {
+      const res = await fetch(`${API_BASE}/simulate/fault`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scenario: scenarioId })
+      });
+      if (res.ok) {
+        const state = await res.json();
+        this._backendOnline = true;
+        this._store = state;
+        return state;
+      }
+    } catch (e) {
+      console.warn('Backend fault injection failed, falling back to local simulation:', e);
+      this._backendOnline = false;
+    }
+    // Local fallback
+    const g = this._init();
+    await this._delay(300);
+    if (scenarioId === 'S3') {
+      return this.resetGrid();
+    }
+    g.activeFaultId = null;
+    g.relaySequence = [];
+    g.restorationPlan = null;
+    g.restorationExecuted = false;
+    g.restorationPath = [];
+    g.edges.forEach(e => {
+      e.status = 'healthy';
+      if (e.isTie) {
+        e.switchState = 'open';
+        e.status = 'isolated';
+        e.telemetry = { voltageKV: 0, currentA: 0, loadPct: 0, powerMW: 0 };
+      }
+    });
+    const seed = clone(GRID_DATA_SEED).edges;
+    g.edges.forEach(e => {
+      const s = seed.find(x => x.id === e.id);
+      if (s && !e.isTie) e.telemetry = clone(s.telemetry);
+    });
+    const seedNodes = clone(GRID_DATA_SEED).nodes;
+    g.nodes.forEach(n => {
+      const s = seedNodes.find(x => x.id === n.id);
+      if (s) n.loadMW = s.loadMW;
+    });
+    let faultEdgeId, faultType, severity, desc, affectedDesc;
+    if (scenarioId === 'S1') {
+      faultEdgeId = 'E-SUBA-F2';
+      faultType = 'Overcurrent Fault (3-phase short)';
+      severity = 'critical';
+      desc = 'Permanent line fault on 33kV incomer Substation Alpha → Feeder F2. Protective relay tripped CB-A2. Areas B & C lose supply.';
+      affectedDesc = 'Area B + Area C disconnected';
+    } else if (scenarioId === 'S2') {
+      faultEdgeId = 'E-SUBA-F2';
+      faultType = 'Overcurrent Fault + Feeder F3 Thermal Overload (Double-fault / Peak Load)';
+      severity = 'critical';
+      desc = 'Line fault on A→F2 during system peak. Feeder F3 simultaneously at thermal limit (Area D load spiked). Tie restoration infeasible — no feasible route.';
+      affectedDesc = 'Area B + Area C isolated; F3 at capacity';
+      const d = g.nodes.find(n => n.id === 'AREA-D');
+      if (d) d.loadMW = 6.7;
+      const f3d = g.edges.find(e => e.id === 'E-F3-DT104');
+      if (f3d) { f3d.telemetry.loadPct = 94; f3d.telemetry.currentA = 540; f3d.telemetry.powerMW = 6.7; }
+      const sbf3 = g.edges.find(e => e.id === 'E-SUBB-F3');
+      if (sbf3) { sbf3.telemetry.loadPct = 92; sbf3.telemetry.currentA = 540; sbf3.telemetry.powerMW = 6.7; }
+    } else {
+      return { ok: false, error: 'Unknown scenario' };
+    }
+    const fe = g.edges.find(e => e.id === faultEdgeId);
+    const spikeI = fe.telemetry.currentA * 14;
+    fe.status = 'faulted';
+    fe.telemetry = {
+      voltageKV: +(fe.telemetry.voltageKV * 0.22).toFixed(2),
+      currentA: Math.round(spikeI),
+      loadPct: 100,
+      powerMW: 0
+    };
+    const faultId = 'FLT-' + (g.faults.length + 1).toString().padStart(3, '0');
+    const fault = {
+      id: faultId,
+      edgeId: faultEdgeId,
+      edgeName: fe.name,
+      type: faultType,
+      severity,
+      desc,
+      affectedDesc,
+      ts: NOW(),
+      scenarioId
+    };
+    g.faults.unshift(fault);
+    g.activeFaultId = faultId;
+    g.statusPhase = 'fault_detected';
+    g.anomalies.unshift({
+      id: 'AN-' + Math.random().toString(36).slice(2, 7),
+      ts: NOW(),
+      faultId,
+      metric: 'Overcurrent',
+      value: Math.round(spikeI) + ' A',
+      threshold: Math.round(fe.telemetry.currentA / 14 * 1.2) + ' A',
+      location: fe.name,
+      severity
+    });
+    g.anomalies.unshift({
+      id: 'AN-' + Math.random().toString(36).slice(2, 7),
+      ts: NOW() + 30,
+      faultId,
+      metric: 'Undervoltage',
+      value: fe.telemetry.voltageKV + ' kV',
+      threshold: '29.7 kV',
+      location: fe.name,
+      severity: 'high'
+    });
+    g.relaySequence = [{
+      t: 0,
+      label: 'Fault inception',
+      detail: faultType + ' on ' + fe.name,
+      tag: 'fault'
+    }, {
+      t: 8,
+      label: 'Overcurrent pickup',
+      detail: 'Relay R-F2 (51/50) — I≫Ipickup, ' + Math.round(spikeI) + 'A vs 300A threshold',
+      tag: 'pickup'
+    }, {
+      t: 14,
+      label: 'Relay trip command',
+      detail: 'R-F2 issued TRIP to CB-A2',
+      tag: 'trip'
+    }, {
+      t: 45,
+      label: 'CB-A2 opened',
+      detail: 'Circuit breaker A-2 interrupted fault current',
+      tag: 'break'
+    }, {
+      t: 52,
+      label: 'Fault isolated',
+      detail: 'Upstream intact. Downstream ' + affectedDesc + ' de-energised.',
+      tag: 'iso'
+    }];
+    g.statusPhase = 'localised';
+    g.downstream = downstreamNodes(g, faultEdgeId);
+    g.restorationPlan = this._buildPlan(g, fault);
+    g.restorationExecuted = false;
+    g.restorationPath = [];
+    this._logEvent({
+      type: 'fault',
+      subtype: faultType,
+      faultId,
+      location: fe.name,
+      severity,
+      outcome: 'detected',
+      detail: desc
+    });
+    this._logEvent({
+      type: 'localisation',
+      faultId,
+      location: fe.name,
+      outcome: 'localised',
+      detail: 'Relay R-F2 tripped CB-A2. Fault segment ' + fe.name + ' isolated.'
+    });
+    this._store = recomputeGrid(g);
+    return this._snap();
+  },
+
+  _buildPlan(g, fault) {
+    const tie = g.edges.find(e => e.id === 'E-TS1');
+    const f3cap = g.nodes.find(n => n.id === 'F3').capacityMW;
+    const f3load = g.nodes.filter(n => n.id === 'AREA-D').reduce((s, n) => s + n.loadMW, 0);
+    const restore = g.nodes.filter(n => ['AREA-B', 'AREA-C'].includes(n.id)).reduce((s, n) => s + n.loadMW, 0);
+    const projected = f3load + restore;
+    const feasible = projected <= f3cap;
+    const margin = +(f3cap - projected).toFixed(2);
+    const actions = [{
+      id: 'a1',
+      kind: 'open',
+      target: 'SW-A2',
+      desc: 'Open sectionaliser SW-A2 to confirm fault isolation on F2 incomer',
+      reason: 'Lock out faulted segment'
+    }, {
+      id: 'a2',
+      kind: 'close',
+      target: 'TS-1',
+      desc: 'Close normally-open tie-switch TS-1 (F2↔F3)',
+      reason: 'Backfeed F2 downstream from Feeder F3'
+    }];
+    const path = feasible ? ['E-TS1', 'E-F2-DT102', 'E-F2-DT103', 'E-DT102-B', 'E-DT103-C'] : [];
+    return {
+      faultId: fault.id,
+      strategy: feasible ? 'Tie-switch backfeed via Feeder F3' : 'No feasible alternative route',
+      altFeeder: 'F3 (Substation Beta)',
+      tieSwitch: 'TS-1',
+      capacityCheck: {
+        feeder: 'F3',
+        capacityMW: f3cap,
+        currentLoadMW: +f3load.toFixed(2),
+        addedLoadMW: +restore.toFixed(2),
+        projectedLoadMW: +projected.toFixed(2),
+        marginMW: margin,
+        result: feasible ? 'Pass' : 'Fail'
+      },
+      actions,
+      restoreTargets: ['AREA-B', 'AREA-C'],
+      restoreLoadMW: +restore.toFixed(2),
+      feasible,
+      pathEdgeIds: path
+    };
+  },
+
+  async getRestorationPlan(faultId) {
+    await this._delay(160);
+    const s = this._snap();
+    return s.restorationPlan;
+  },
+
+  async executeRestoration() {
+    try {
+      const res = await fetch(`${API_BASE}/simulate/restore`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      if (res.ok) {
+        const state = await res.json();
+        this._backendOnline = true;
+        this._store = state;
+        return state;
+      }
+    } catch (e) {
+      console.warn('Backend restoration failed, using local engine:', e);
+      this._backendOnline = false;
+    }
+    // Local fallback
+    const g = this._init();
+    await this._delay(500);
+    const plan = g.restorationPlan;
+    if (!plan) return { ok: false, error: 'No active restoration plan.' };
+    if (!plan.feasible) {
+      g.statusPhase = 'no_route';
+      this._logEvent({
+        type: 'restoration',
+        faultId: plan.faultId,
+        outcome: 'no_route',
+        detail: 'No feasible route — alternative feeder exceeds thermal capacity. Manual dispatch required.'
+      });
+      this._store = recomputeGrid(g);
+      return this._snap();
+    }
+    const swA2 = g.edges.find(e => e.switch === 'SW-A2');
+    if (swA2) swA2.switchState = 'open';
+    const tie = g.edges.find(e => e.id === 'E-TS1');
+    if (tie) {
+      tie.switchState = 'closed';
+      tie.telemetry = {
+        voltageKV: 11.0,
+        currentA: Math.round(plan.restoreLoadMW * 1000 / (11 * 1.732)),
+        loadPct: Math.round(plan.restoreLoadMW / 8 * 100),
+        powerMW: plan.restoreLoadMW
+      };
+    }
+    g.restorationPath = plan.pathEdgeIds;
+    g.restorationExecuted = true;
+    g.statusPhase = 'restoring';
+    ['E-F2-DT102', 'E-F2-DT103', 'E-DT102-B', 'E-DT103-C'].forEach(eid => {
+      const e = g.edges.find(x => x.id === eid);
+      if (e && e.status !== 'faulted') {
+        const seed = clone(GRID_DATA_SEED).edges.find(x => x.id === eid);
+        if (seed) e.telemetry = clone(seed.telemetry);
+      }
+    });
+    this._logEvent({
+      type: 'switching',
+      faultId: plan.faultId,
+      outcome: 'executed',
+      detail: 'Opened SW-A2; Closed TS-1. Backfeed active via F3.'
+    });
+    g.statusPhase = 'restored';
+    const fault = g.faults.find(f => f.id === plan.faultId);
+    const dur = fault ? Math.round((NOW() - fault.ts) / 1000) : 0;
+    this._logEvent({
+      type: 'restoration',
+      faultId: plan.faultId,
+      outcome: 'restored',
+      durationSec: dur,
+      detail: 'Areas B & C re-energised via TS-1 backfeed from F3. Restoration time ' + dur + 's.'
+    });
+    this._store = recomputeGrid(g);
+    return this._snap();
+  },
+
+  async resetGrid() {
+    try {
+      const res = await fetch(`${API_BASE}/simulate/reset`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      if (res.ok) {
+        const state = await res.json();
+        this._backendOnline = true;
+        this._store = state;
+        return state;
+      }
+    } catch (e) {
+      console.warn('Backend reset failed, using local engine:', e);
+      this._backendOnline = false;
+    }
+    // Local fallback
+    const g = clone(GRID_DATA_SEED);
+    g.events = this._store ? this._store.events.slice(0, 60) : [];
+    if (g.events.length) this._logEventRef = true;
+    this._store = recomputeGrid(g);
+    this._logEvent({
+      type: 'reset',
+      outcome: 'reset',
+      detail: 'Grid reset to healthy nominal state by operator.'
+    });
+    return this._snap();
+  },
+
+  async getEventHistory(filters) {
+    try {
+      const params = new URLSearchParams();
+      if (filters) {
+        if (filters.type && filters.type !== 'all') params.set('type', filters.type);
+        if (filters.q) params.set('q', filters.q);
+      }
+      const res = await fetch(`${API_BASE}/events?${params.toString()}`);
+      if (res.ok) {
+        return await res.json();
+      }
+    } catch (e) {
+      console.warn('Backend events query failed, using local events:', e);
+    }
+    await this._delay(120);
+    let evs = this._snap().events;
+    if (filters) {
+      if (filters.type && filters.type !== 'all') evs = evs.filter(e => e.type === filters.type);
+      if (filters.q) {
+        const q = filters.q.toLowerCase();
+        evs = evs.filter(e => (e.detail || '').toLowerCase().includes(q) || (e.location || '').toLowerCase().includes(q));
+      }
+    }
+    return evs;
+  }
+};
+
+/* ---------------------------------------------------------------------
+   React Context — exposes grid state + actions backed by apiService
+--------------------------------------------------------------------- */
+const GridCtx = createContext(null);
+function useGrid() {
+  const c = useContext(GridCtx);
+  if (!c) throw new Error('useGrid outside provider');
+  return c;
+}
+function GridProvider({
+  children
+}) {
+  const [grid, setGrid] = useState(() => apiService._init() && apiService._snap());
+  const [loading, setLoading] = useState(false);
+  const [toast, setToast] = useState(null);
+  const [backendConnected, setBackendConnected] = useState(false);
+
+  const refresh = useCallback(async () => {
+    const s = await apiService.getGridState();
+    setGrid(s);
+    setBackendConnected(apiService._backendOnline === true);
+    return s;
+  }, []);
+  const showToast = useCallback((msg, kind = 'info') => {
+    setToast({
+      msg,
+      kind,
+      id: NOW()
+    });
+    setTimeout(() => setToast(null), 3200);
+  }, []);
+
+  // initial sync & live telemetry tick
+  useEffect(() => {
+    refresh();
+    const id = setInterval(async () => {
+      const s = await apiService.tickTelemetry();
+      setGrid(s);
+      setBackendConnected(apiService._backendOnline === true);
+    }, 2600);
+    return () => clearInterval(id);
+  }, [refresh]);
+
+  const actions = useMemo(() => ({
+    login: async creds => apiService.login(creds),
+    verifyOtp: async data => apiService.verifyOtp(data),
+    resendOtp: async email => apiService.resendOtp(email),
+    triggerScenario: async sid => {
+      setLoading(true);
+      const s = await apiService.triggerScenario(sid);
+      setGrid(s);
+      setLoading(false);
+      setBackendConnected(apiService._backendOnline === true);
+      showToast(sid === 'S3' ? 'Grid reset to healthy state.' : 'Fault scenario injected — protective relays tripping.', sid === 'S3' ? 'success' : 'fault');
+      return s;
+    },
+    executeRestoration: async () => {
+      setLoading(true);
+      const s = await apiService.executeRestoration();
+      setGrid(s);
+      setLoading(false);
+      setBackendConnected(apiService._backendOnline === true);
+      const phase = s.statusPhase;
+      showToast(phase === 'restored' ? 'Restoration successful — load re-energised.' : phase === 'no_route' ? 'No feasible route — manual dispatch required.' : 'Restoration executed.', phase === 'restored' ? 'success' : 'fault');
+      return s;
+    },
+    resetGrid: async () => {
+      setLoading(true);
+      const s = await apiService.resetGrid();
+      setGrid(s);
+      setLoading(false);
+      setBackendConnected(apiService._backendOnline === true);
+      showToast('Grid restored to nominal healthy state.', 'success');
+      return s;
+    },
+    refresh
+  }), [refresh, showToast]);
+  return /*#__PURE__*/React.createElement(GridCtx.Provider, {
+    value: {
+      grid,
+      loading,
+      toast,
+      actions,
+      backendConnected
+    }
+  }, children, toast && /*#__PURE__*/React.createElement(Toast, {
+    toast: toast
+  }));
+}
+
+/* ---------------------------------------------------------------------
+   Shared UI primitives
+--------------------------------------------------------------------- */
+function Toast({
+  toast
+}) {
+  const colors = {
+    info: 'border-restoration text-restoration',
+    success: 'border-healthy text-healthy',
+    fault: 'border-faulted text-faulted',
+    warn: 'border-warning text-warning'
+  };
+  const icons = {
+    info: 'radio',
+    success: 'checkCircle',
+    fault: 'siren',
+    warn: 'alertTriangle'
+  };
+  return /*#__PURE__*/React.createElement("div", {
+    className: "fixed bottom-5 right-5 z-50 fade-in"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center gap-3 px-4 py-3 rounded-lg bg-grid-card border-l-4 shadow-2xl " + (colors[toast.kind] || colors.info)
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: icons[toast.kind] || icons.info,
+    className: "w-5 h-5"
+  }), /*#__PURE__*/React.createElement("span", {
+    className: "text-sm text-slate-100"
+  }, toast.msg)));
+}
+function Card({
+  children,
+  className = '',
+  title,
+  icon,
+  action
+}) {
+  return /*#__PURE__*/React.createElement("div", {
+    className: "rounded-xl bg-grid-card border border-grid-border/70 card-glow transition-shadow " + className
+  }, (title || action) && /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center justify-between px-4 py-3 border-b border-grid-border/60"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center gap-2 text-slate-200 font-semibold text-sm tracking-wide"
+  }, icon && /*#__PURE__*/React.createElement(Icon, {
+    name: icon,
+    className: "w-4 h-4 text-restoration"
+  }), /*#__PURE__*/React.createElement("span", {
+    className: "uppercase"
+  }, title)), action), /*#__PURE__*/React.createElement("div", {
+    className: "p-4"
+  }, children));
+}
+const STATUS_META = {
+  healthy: {
+    label: 'Healthy',
+    color: 'text-healthy',
+    bg: 'bg-healthy/15',
+    ring: 'border-healthy/40',
+    dot: 'bg-healthy',
+    hex: '#10B981'
+  },
+  warning: {
+    label: 'Warning',
+    color: 'text-warning',
+    bg: 'bg-warning/15',
+    ring: 'border-warning/40',
+    dot: 'bg-warning',
+    hex: '#F59E0B'
+  },
+  faulted: {
+    label: 'Faulted',
+    color: 'text-faulted',
+    bg: 'bg-faulted/15',
+    ring: 'border-faulted/50',
+    dot: 'bg-faulted',
+    hex: '#EF4444'
+  },
+  isolated: {
+    label: 'Isolated',
+    color: 'text-isolated',
+    bg: 'bg-isolated/15',
+    ring: 'border-isolated/40',
+    dot: 'bg-isolated',
+    hex: '#64748B'
+  },
+  restoration: {
+    label: 'Restoring',
+    color: 'text-restoration',
+    bg: 'bg-restoration/15',
+    ring: 'border-restoration/50',
+    dot: 'bg-restoration',
+    hex: '#06B6D4'
+  },
+  open: {
+    label: 'Open',
+    color: 'text-isolated',
+    bg: 'bg-isolated/15',
+    ring: 'border-isolated/40',
+    dot: 'bg-isolated',
+    hex: '#64748B'
+  },
+  closed: {
+    label: 'Closed',
+    color: 'text-healthy',
+    bg: 'bg-healthy/15',
+    ring: 'border-healthy/40',
+    dot: 'bg-healthy',
+    hex: '#10B981'
+  },
+  critical: {
+    label: 'Critical',
+    color: 'text-faulted',
+    bg: 'bg-faulted/15',
+    ring: 'border-faulted/50',
+    dot: 'bg-faulted',
+    hex: '#EF4444'
+  },
+  high: {
+    label: 'High',
+    color: 'text-warning',
+    bg: 'bg-warning/15',
+    ring: 'border-warning/40',
+    dot: 'bg-warning',
+    hex: '#F59E0B'
+  },
+  Pass: {
+    label: 'Pass',
+    color: 'text-healthy',
+    bg: 'bg-healthy/15',
+    ring: 'border-healthy/40',
+    dot: 'bg-healthy',
+    hex: '#10B981'
+  },
+  Fail: {
+    label: 'Fail',
+    color: 'text-faulted',
+    bg: 'bg-faulted/15',
+    ring: 'border-faulted/50',
+    dot: 'bg-faulted',
+    hex: '#EF4444'
+  }
+};
+function Badge({
+  status,
+  label,
+  className = ''
+}) {
+  const m = STATUS_META[status] || STATUS_META.healthy;
+  const text = label || m.label;
+  return /*#__PURE__*/React.createElement("span", {
+    className: "inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-xs font-semibold border " + m.bg + ' ' + m.color + ' ' + m.ring + ' ' + className
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "badge-dot " + m.dot
+  }), text);
+}
+function KPICard({
+  icon,
+  label,
+  value,
+  unit,
+  sub,
+  accent = 'restoration',
+  trend
+}) {
+  const accents = {
+    restoration: 'text-restoration',
+    healthy: 'text-healthy',
+    warning: 'text-warning',
+    faulted: 'text-faulted'
+  };
+  return /*#__PURE__*/React.createElement("div", {
+    className: "rounded-xl bg-grid-card border border-grid-border/70 p-4 card-glow transition-all relative overflow-hidden"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "absolute -right-4 -top-4 opacity-10"
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: icon,
+    className: "w-20 h-20"
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center gap-2 text-slate-400 text-xs uppercase tracking-wider font-semibold"
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: icon,
+    className: "w-4 h-4 " + (accents[accent] || accents.restoration)
+  }), label), /*#__PURE__*/React.createElement("div", {
+    className: "mt-2 flex items-baseline gap-1"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "text-3xl font-bold text-slate-50 font-mono"
+  }, value), unit && /*#__PURE__*/React.createElement("span", {
+    className: "text-sm text-slate-400"
+  }, unit)), /*#__PURE__*/React.createElement("div", {
+    className: "mt-1 flex items-center gap-2 text-xs text-slate-400"
+  }, sub, trend != null && /*#__PURE__*/React.createElement("span", {
+    className: "inline-flex items-center gap-1 " + (trend >= 0 ? 'text-healthy' : 'text-faulted')
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: trend >= 0 ? 'trendingUp' : 'trendingDown',
+    className: "w-3 h-3"
+  }), Math.abs(trend), "%")));
+}
+function LineChart({
+  series,
+  height = 150,
+  yLabel,
+  color = '#06B6D4',
+  min,
+  max,
+  unit
+}) {
+  // series: [{ name, color, data: [{t, v}] }]
+  const W = 600,
+    H = height,
+    padL = 34,
+    padR = 8,
+    padT = 10,
+    padB = 18;
+  const all = series.flatMap(s => s.data.map(d => d.v));
+  const lo = min != null ? min : all.length ? Math.min(...all) : 0;
+  const hi = max != null ? max : all.length ? Math.max(...all) : 1;
+  const span = Math.max(0.0001, hi - lo);
+  const x = (i, n) => padL + (n <= 1 ? 0 : i / (n - 1) * (W - padL - padR));
+  const y = v => padT + (1 - (v - lo) / span) * (H - padT - padB);
+  const gridLines = 4;
+  return /*#__PURE__*/React.createElement("svg", {
+    viewBox: `0 0 ${W} ${H}`,
+    className: "w-full",
+    style: {
+      height
+    }
+  }, [...Array(gridLines + 1)].map((_, i) => {
+    const gv = lo + span * i / gridLines;
+    const gy = y(gv);
+    return /*#__PURE__*/React.createElement("g", {
+      key: i
+    }, /*#__PURE__*/React.createElement("line", {
+      x1: padL,
+      x2: W - padR,
+      y1: gy,
+      y2: gy,
+      stroke: "#1E293B",
+      strokeWidth: "1"
+    }), /*#__PURE__*/React.createElement("text", {
+      x: padL - 6,
+      y: gy + 3,
+      textAnchor: "end",
+      fontSize: "9",
+      fill: "#64748B",
+      fontFamily: "JetBrains Mono, monospace"
+    }, gv.toFixed(unit === 'A' ? 0 : 2)));
+  }), series.map(s => {
+    const n = s.data.length;
+    if (!n) return null;
+    const d = s.data.map((p, i) => (i === 0 ? 'M' : 'L') + x(i, n).toFixed(1) + ' ' + y(p.v).toFixed(1)).join(' ');
+    return /*#__PURE__*/React.createElement("g", {
+      key: s.name
+    }, /*#__PURE__*/React.createElement("path", {
+      d: d,
+      fill: "none",
+      stroke: s.color,
+      strokeWidth: "1.8",
+      strokeLinejoin: "round",
+      strokeLinecap: "round"
+    }), n > 0 && /*#__PURE__*/React.createElement("circle", {
+      cx: x(n - 1, n),
+      cy: y(s.data[n - 1].v),
+      r: "2.6",
+      fill: s.color
+    }));
+  }), yLabel && /*#__PURE__*/React.createElement("text", {
+    x: padL,
+    y: H - 2,
+    fontSize: "9",
+    fill: "#64748B"
+  }, yLabel));
+}
+function StatRow({
+  label,
+  value,
+  good
+}) {
+  return /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center justify-between py-1.5 border-b border-grid-border/40 last:border-0"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "text-xs text-slate-400"
+  }, label), /*#__PURE__*/React.createElement("span", {
+    className: "text-xs font-mono font-semibold " + (good === true ? 'text-healthy' : good === false ? 'text-faulted' : 'text-slate-200')
+  }, value));
+}
+
+/* ---------------------------------------------------------------------
+   Interactive Network Map (SVG)
+--------------------------------------------------------------------- */
+const NODE_STYLE = {
+  substation: {
+    r: 22,
+    icon: 'factory',
+    fill: '#0F1A2E',
+    stroke: '#38BDF8',
+    label: 'SUB'
+  },
+  feeder: {
+    r: 16,
+    icon: 'zap',
+    fill: '#0F1A2E',
+    stroke: '#22D3EE',
+    label: 'FDR'
+  },
+  transformer: {
+    r: 15,
+    icon: 'cpu',
+    fill: '#0F1A2E',
+    stroke: '#A78BFA',
+    label: 'DT'
+  },
+  consumer: {
+    r: 18,
+    icon: 'users',
+    fill: '#0F1A2E',
+    stroke: '#34D399',
+    label: 'AREA'
+  }
+};
+const EDGE_COLOR = {
+  healthy: '#10B981',
+  warning: '#F59E0B',
+  faulted: '#EF4444',
+  isolated: '#475569',
+  restoration: '#06B6D4'
+};
+function NetworkMap({
+  grid,
+  onSelect,
+  selected,
+  highlightEdge,
+  zoomEdge,
+  compact
+}) {
+  const nodes = grid.nodes;
+  const edges = grid.edges;
+  const VBW = 1000,
+    VBH = 600;
+  const nodeById = useMemo(() => Object.fromEntries(nodes.map(n => [n.id, n])), [nodes]);
+  const edgePath = e => {
+    const a = nodeById[e.from],
+      b = nodeById[e.to];
+    if (!a || !b) return '';
+    // curved control point for visual flair on long lines
+    const mx = (a.x + b.x) / 2,
+      my = (a.y + b.y) / 2;
+    if (e.isTie) {
+      // tie: gentle S curve
+      return `M ${a.x} ${a.y} C ${a.x + 120} ${a.y - 60}, ${b.x - 120} ${b.y - 60}, ${b.x} ${b.y}`;
+    }
+    return `M ${a.x} ${a.y} L ${b.x} ${b.y}`;
+  };
+
+  // zoom transform
+  let viewBox = `0 0 ${VBW} ${VBH}`;
+  if (zoomEdge) {
+    const e = edges.find(x => x.id === zoomEdge);
+    if (e) {
+      const a = nodeById[e.from],
+        b = nodeById[e.to];
+      const cx = (a.x + b.x) / 2,
+        cy = (a.y + b.y) / 2;
+      const span = 260;
+      viewBox = `${cx - span} ${cy - span * 0.6} ${span * 2} ${span * 1.2}`;
+    }
+  }
+  return /*#__PURE__*/React.createElement("svg", {
+    viewBox: viewBox,
+    className: "w-full h-auto select-none",
+    style: {
+      background: 'radial-gradient(circle at 50% 40%, #0F1A2E, #0B1120 70%)',
+      borderRadius: 12
+    }
+  }, /*#__PURE__*/React.createElement("defs", null, /*#__PURE__*/React.createElement("marker", {
+    id: "arrow-healthy",
+    markerWidth: "9",
+    markerHeight: "9",
+    refX: "7",
+    refY: "3",
+    orient: "auto"
+  }, /*#__PURE__*/React.createElement("path", {
+    d: "M0,0 L7,3 L0,6 Z",
+    fill: EDGE_COLOR.healthy
+  })), /*#__PURE__*/React.createElement("marker", {
+    id: "arrow-restoration",
+    markerWidth: "9",
+    markerHeight: "9",
+    refX: "7",
+    refY: "3",
+    orient: "auto"
+  }, /*#__PURE__*/React.createElement("path", {
+    d: "M0,0 L7,3 L0,6 Z",
+    fill: EDGE_COLOR.restoration
+  })), /*#__PURE__*/React.createElement("marker", {
+    id: "arrow-warning",
+    markerWidth: "9",
+    markerHeight: "9",
+    refX: "7",
+    refY: "3",
+    orient: "auto"
+  }, /*#__PURE__*/React.createElement("path", {
+    d: "M0,0 L7,3 L0,6 Z",
+    fill: EDGE_COLOR.warning
+  })), /*#__PURE__*/React.createElement("pattern", {
+    id: "grid-pattern",
+    width: "40",
+    height: "40",
+    patternUnits: "userSpaceOnUse"
+  }, /*#__PURE__*/React.createElement("path", {
+    d: "M40 0H0V40",
+    fill: "none",
+    stroke: "#15233B",
+    strokeWidth: "1"
+  }))), /*#__PURE__*/React.createElement("rect", {
+    x: "0",
+    y: "0",
+    width: VBW,
+    height: VBH,
+    fill: "url(#grid-pattern)",
+    opacity: "0.5"
+  }), edges.map(e => {
+    const a = nodeById[e.from],
+      b = nodeById[e.to];
+    const color = EDGE_COLOR[e.status] || EDGE_COLOR.healthy;
+    const isFaulted = e.status === 'faulted';
+    const isRestoration = e.status === 'restoration';
+    const isSelected = selected && selected.type === 'edge' && selected.id === e.id;
+    const isHighlight = highlightEdge === e.id;
+    const cls = isFaulted ? 'faulted-line' : isRestoration ? 'restoration-line restoration-glow' : '';
+    const w = e.isTie ? 2.5 : e.telemetry && e.telemetry.loadPct > 75 ? 4 : 3;
+    // midpoint for switch marker + flow arrow
+    const mx = (a.x + b.x) / 2,
+      my = (a.y + b.y) / 2;
+    return /*#__PURE__*/React.createElement("g", {
+      key: e.id,
+      className: "cursor-pointer",
+      onClick: ev => {
+        ev.stopPropagation();
+        onSelect && onSelect({
+          type: 'edge',
+          id: e.id
+        });
+      }
+    }, /*#__PURE__*/React.createElement("path", {
+      d: edgePath(e),
+      fill: "none",
+      stroke: "transparent",
+      strokeWidth: "14"
+    }), /*#__PURE__*/React.createElement("path", {
+      d: edgePath(e),
+      fill: "none",
+      stroke: color,
+      strokeWidth: isHighlight || isSelected ? w + 2 : w,
+      className: cls,
+      strokeLinecap: "round",
+      markerEnd: e.status === 'healthy' ? 'url(#arrow-healthy)' : e.status === 'restoration' ? 'url(#arrow-restoration)' : e.status === 'warning' ? 'url(#arrow-warning)' : undefined,
+      opacity: e.status === 'isolated' ? 0.5 : 1
+    }), isFaulted && /*#__PURE__*/React.createElement("g", null, /*#__PURE__*/React.createElement("circle", {
+      cx: mx,
+      cy: my,
+      r: "7",
+      fill: "#EF4444",
+      className: "blip"
+    }), /*#__PURE__*/React.createElement("path", {
+      d: edgePath(e),
+      fill: "none",
+      stroke: "#FCA5A5",
+      strokeWidth: "1",
+      strokeDasharray: "3 5",
+      opacity: "0.6"
+    })), (e.switch || e.isTie) && /*#__PURE__*/React.createElement("g", {
+      transform: `translate(${mx} ${my})`
+    }, /*#__PURE__*/React.createElement("circle", {
+      r: "9",
+      fill: "#0B1120",
+      stroke: e.switchState === 'closed' ? '#10B981' : '#64748B',
+      strokeWidth: "2"
+    }), e.isTie ? /*#__PURE__*/React.createElement("text", {
+      x: "0",
+      y: "3",
+      textAnchor: "middle",
+      fontSize: "7",
+      fill: e.switchState === 'closed' ? '#10B981' : '#94A3B8',
+      fontWeight: "700"
+    }, "TS") : /*#__PURE__*/React.createElement("text", {
+      x: "0",
+      y: "3",
+      textAnchor: "middle",
+      fontSize: "7",
+      fill: e.switchState === 'closed' ? '#10B981' : '#94A3B8',
+      fontWeight: "700"
+    }, "SW"), e.switch && /*#__PURE__*/React.createElement("text", {
+      x: "0",
+      y: "22",
+      textAnchor: "middle",
+      fontSize: "8",
+      fill: "#64748B",
+      fontFamily: "JetBrains Mono"
+    }, e.switch)), !compact && !e.isTie && e.status !== 'faulted' && e.telemetry && /*#__PURE__*/React.createElement("text", {
+      x: mx + 6,
+      y: my - 6,
+      fontSize: "9",
+      fill: color,
+      fontFamily: "JetBrains Mono",
+      opacity: "0.85"
+    }, e.telemetry.loadPct, "%"));
+  }), nodes.map(n => {
+    const st = NODE_STYLE[n.type];
+    const unpowered = n.powered === false;
+    const isSel = selected && selected.type === 'node' && selected.id === n.id;
+    const affected = n.type === 'consumer' && unpowered;
+    const stroke = affected ? '#64748B' : st.stroke;
+    const fillOpacity = unpowered ? 0.5 : 1;
+    return /*#__PURE__*/React.createElement("g", {
+      key: n.id,
+      className: "cursor-pointer",
+      onClick: ev => {
+        ev.stopPropagation();
+        onSelect && onSelect({
+          type: 'node',
+          id: n.id
+        });
+      },
+      transform: `translate(${n.x} ${n.y})`
+    }, affected && /*#__PURE__*/React.createElement("circle", {
+      r: st.r + 8,
+      fill: "none",
+      stroke: "#EF4444",
+      strokeWidth: "1.5",
+      strokeDasharray: "3 4",
+      opacity: "0.5"
+    }), /*#__PURE__*/React.createElement("circle", {
+      r: st.r,
+      fill: st.fill,
+      fillOpacity: fillOpacity,
+      stroke: isSel ? '#22D3EE' : stroke,
+      strokeWidth: isSel ? 3 : 2,
+      filter: unpowered ? '' : 'drop-shadow(0 0 6px ' + (st.stroke + '55') + ')'
+    }), /*#__PURE__*/React.createElement("g", {
+      transform: `translate(-${st.icon === 'factory' ? 9 : 8} -${8})`,
+      stroke: unpowered ? '#64748B' : st.stroke
+    }, /*#__PURE__*/React.createElement(Icon, {
+      name: st.icon,
+      className: "w-4 h-4"
+    })), /*#__PURE__*/React.createElement("text", {
+      x: "0",
+      y: st.r + 14,
+      textAnchor: "middle",
+      fontSize: "11",
+      fill: unpowered ? '#64748B' : '#E2E8F0',
+      fontWeight: "600"
+    }, n.name), n.type === 'consumer' && /*#__PURE__*/React.createElement("text", {
+      x: "0",
+      y: st.r + 26,
+      textAnchor: "middle",
+      fontSize: "9",
+      fill: "#64748B",
+      fontFamily: "JetBrains Mono"
+    }, n.consumers, " cons \xB7 ", n.loadMW, " MW"), n.type === 'feeder' && /*#__PURE__*/React.createElement("text", {
+      x: "0",
+      y: st.r + 26,
+      textAnchor: "middle",
+      fontSize: "9",
+      fill: "#64748B",
+      fontFamily: "JetBrains Mono"
+    }, n.capacityMW, " MW cap"));
+  }));
+}
+
+/* Telemetry slide-over panel */
+function TelemetryPanel({
+  grid,
+  selection,
+  onClose
+}) {
+  if (!selection) return null;
+  let title, sub, rows, status, extra;
+  if (selection.type === 'node') {
+    const n = grid.nodes.find(x => x.id === selection.id);
+    if (!n) return null;
+    title = n.name;
+    const typeLabel = {
+      substation: 'Substation',
+      feeder: 'Feeder',
+      transformer: 'Distribution Transformer',
+      consumer: 'Consumer Area'
+    }[n.type];
+    sub = typeLabel + ' · ID ' + n.id;
+    status = n.powered === false ? 'isolated' : 'healthy';
+    if (n.type === 'substation') rows = [['Voltage', n.voltageKV + ' kV'], ['Capacity', n.capacityMVA + ' MVA'], ['Base Load', n.baseLoad + ' MVA'], ['Status', n.powered === false ? 'OFFLINE' : 'ENERGISED']];else if (n.type === 'feeder') rows = [['Voltage', n.voltageKV + ' kV'], ['Capacity', n.capacityMW + ' MW'], ['Source', n.feederOf], ['Status', n.powered === false ? 'DE-ENERGISED' : 'ON']];else if (n.type === 'transformer') rows = [['Secondary Voltage', n.voltageKV + ' kV'], ['Capacity', n.capacityKVA + ' kVA'], ['Status', n.powered === false ? 'DE-ENERGISED' : 'LOADED']];else rows = [['Consumers', n.consumers], ['Load', n.loadMW + ' MW'], ['Type', n.tag], ['Status', n.powered === false ? 'DISCONNECTED' : 'SUPPLIED']];
+  } else {
+    const e = grid.edges.find(x => x.id === selection.id);
+    if (!e) return null;
+    title = e.name;
+    sub = 'Line · ' + e.from + ' → ' + e.to + (e.switch ? ' · ' + e.switch : '');
+    status = e.status;
+    const t = e.telemetry || {};
+    rows = [['Voltage', t.voltageKV != null ? t.voltageKV + ' kV' : '—'], ['Current', t.currentA != null ? t.currentA + ' A' : '—'], ['Load', t.loadPct != null ? t.loadPct + ' %' : '—'], ['Power Flow', t.powerMW != null ? t.powerMW + ' MW' : '—'], ['Switch', e.switch || '—'], ['Switch State', e.switchState || '—']];
+    extra = e.isTie ? /*#__PURE__*/React.createElement("div", {
+      className: "mt-2 text-xs text-slate-400"
+    }, "Normally-open tie switch \u2014 closes during restoration to backfeed downstream feeder.") : null;
+  }
+  return /*#__PURE__*/React.createElement("div", {
+    className: "fixed inset-0 z-40 flex justify-end",
+    onClick: onClose
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "absolute inset-0 bg-black/40"
+  }), /*#__PURE__*/React.createElement("div", {
+    className: "relative w-full max-w-sm bg-grid-card border-l border-grid-border h-full overflow-y-auto slide-in",
+    onClick: ev => ev.stopPropagation()
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center justify-between px-4 py-3 border-b border-grid-border/60"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center gap-2"
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "activity",
+    className: "w-4 h-4 text-restoration"
+  }), /*#__PURE__*/React.createElement("span", {
+    className: "text-xs uppercase tracking-wider text-slate-400 font-semibold"
+  }, "Live Telemetry")), /*#__PURE__*/React.createElement("button", {
+    onClick: onClose,
+    className: "text-slate-400 hover:text-slate-100"
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "x",
+    className: "w-5 h-5"
+  }))), /*#__PURE__*/React.createElement("div", {
+    className: "p-4"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center justify-between"
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    className: "text-base font-bold text-slate-50"
+  }, title), /*#__PURE__*/React.createElement("div", {
+    className: "text-xs text-slate-400"
+  }, sub)), /*#__PURE__*/React.createElement(Badge, {
+    status: status
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "mt-4"
+  }, rows.map(([k, v]) => /*#__PURE__*/React.createElement(StatRow, {
+    key: k,
+    label: k,
+    value: v
+  }))), extra, /*#__PURE__*/React.createElement("div", {
+    className: "mt-4 text-[10px] text-slate-500 font-mono"
+  }, "Sampled ", fmtTime(NOW()), " \xB7 SCADA-BESCOM-T9"))));
+}
+
+/* ---------------------------------------------------------------------
+   PAGES (full implementations appended below)
+--------------------------------------------------------------------- */
+const PAGES = [{
+  id: 'dashboard',
+  label: 'Dashboard',
+  icon: 'home'
+}, {
+  id: 'monitoring',
+  label: 'Grid Monitoring',
+  icon: 'activity'
+}, {
+  id: 'fault-detect',
+  label: 'Fault Detection',
+  icon: 'siren'
+}, {
+  id: 'fault-local',
+  label: 'Fault Localisation',
+  icon: 'crosshair'
+}, {
+  id: 'affected',
+  label: 'Affected Areas',
+  icon: 'mapPin'
+}, {
+  id: 'restoration',
+  label: 'Restoration Recs',
+  icon: 'route'
+}, {
+  id: 'simulation',
+  label: 'Simulation Centre',
+  icon: 'command'
+}, {
+  id: 'history',
+  label: 'Event History',
+  icon: 'list'
+}];
+function Login({
+  onProceedToOtp,
+  onLogin
+}) {
+  const {
+    actions
+  } = useGrid();
+  const [email, setEmail] = useState('admin@bescom.sim');
+  const [password, setPassword] = useState('demo123');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const submit = async e => {
+    e.preventDefault();
+    setBusy(true);
+    setErr('');
+    const res = await actions.login({
+      email,
+      password
+    });
+    setBusy(false);
+    if (res.ok) {
+      if (res.requires_otp && onProceedToOtp) {
+        onProceedToOtp({ email, debugOtp: res.debug_otp });
+      } else if (onLogin && res.user) {
+        onLogin(res.user);
+      }
+    } else {
+      setErr(res.error || 'Failed to authenticate.');
+    }
+  };
+  return /*#__PURE__*/React.createElement("div", {
+    className: "min-h-screen flex items-center justify-center p-4 grid-noise relative overflow-hidden"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "absolute inset-0 opacity-30 pointer-events-none"
+  }, /*#__PURE__*/React.createElement("svg", {
+    viewBox: "0 0 1000 600",
+    className: "w-full h-full"
+  }, [...Array(8)].map((_, i) => /*#__PURE__*/React.createElement("line", {
+    key: i,
+    x1: i * 130,
+    y1: "0",
+    x2: i * 130,
+    y2: "600",
+    stroke: "#15233B",
+    strokeWidth: "1"
+  })), [...Array(6)].map((_, i) => /*#__PURE__*/React.createElement("line", {
+    key: i,
+    x1: "0",
+    y1: i * 100,
+    x2: "1000",
+    y2: i * 100,
+    stroke: "#15233B",
+    strokeWidth: "1"
+  })))), /*#__PURE__*/React.createElement("div", {
+    className: "relative w-full max-w-md"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "text-center mb-6"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-grid-card border border-restoration/40 mb-3"
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "zap",
+    className: "w-8 h-8 text-restoration"
+  })), /*#__PURE__*/React.createElement("h1", {
+    className: "text-2xl font-bold text-slate-50"
+  }, "Fault to Recovery"), /*#__PURE__*/React.createElement("p", {
+    className: "text-sm text-slate-400 mt-1"
+  }, "BESCOM · Smart Distribution Network Monitoring & Self-Healing Simulation"), /*#__PURE__*/React.createElement("div", {
+    className: "mt-2 inline-flex items-center gap-2 text-[11px] text-slate-500 font-mono"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "badge-dot bg-healthy blip"
+  }), "SCADA-BESCOM-T9 · Theme 9")), /*#__PURE__*/React.createElement("form", {
+    onSubmit: submit,
+    className: "bg-grid-card border border-grid-border rounded-xl p-6 shadow-2xl"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "space-y-4"
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    className: "block text-xs uppercase tracking-wider text-slate-400 mb-1.5 font-semibold"
+  }, "Operator Email"), /*#__PURE__*/React.createElement("div", {
+    className: "relative"
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "users",
+    className: "w-4 h-4 text-slate-500 absolute left-3 top-3"
+  }), /*#__PURE__*/React.createElement("input", {
+    type: "email",
+    value: email,
+    onChange: e => setEmail(e.target.value),
+    className: "w-full bg-grid-panel border border-grid-border rounded-lg pl-9 pr-3 py-2.5 text-sm text-slate-100 focus:border-restoration focus:outline-none",
+    placeholder: "admin@bescom.sim"
+  }))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    className: "block text-xs uppercase tracking-wider text-slate-400 mb-1.5 font-semibold"
+  }, "Password"), /*#__PURE__*/React.createElement("div", {
+    className: "relative"
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "shield",
+    className: "w-4 h-4 text-slate-500 absolute left-3 top-3"
+  }), /*#__PURE__*/React.createElement("input", {
+    type: "password",
+    value: password,
+    onChange: e => setPassword(e.target.value),
+    className: "w-full bg-grid-panel border border-grid-border rounded-lg pl-9 pr-3 py-2.5 text-sm text-slate-100 focus:border-restoration focus:outline-none",
+    placeholder: "demo123"
+  }))), err && /*#__PURE__*/React.createElement("div", {
+    className: "text-xs text-faulted bg-faulted/10 border border-faulted/30 rounded-lg px-3 py-2 flex items-center gap-2"
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "alertCircle",
+    className: "w-4 h-4"
+  }), err), /*#__PURE__*/React.createElement("button", {
+    type: "submit",
+    disabled: busy,
+    className: "w-full bg-restoration hover:bg-restoration/90 disabled:opacity-60 text-grid-bg font-semibold py-2.5 rounded-lg flex items-center justify-center gap-2 transition-colors cursor-pointer shadow-lg shadow-cyan-950/40"
+  }, busy ? /*#__PURE__*/React.createElement(Icon, {
+    name: "refresh",
+    className: "w-4 h-4 spin-slow"
+  }) : /*#__PURE__*/React.createElement(Icon, {
+    name: "power",
+    className: "w-4 h-4"
+  }), busy ? 'Authenticating…' : 'Enter Control Room'), /*#__PURE__*/React.createElement("div", {
+    className: "text-[11px] text-slate-500 text-center"
+  }, "Two-Factor Verification Enabled · Press 'Enter Control Room' to request OTP code"))), /*#__PURE__*/React.createElement("div", {
+    className: "mt-4 text-center text-[11px] text-slate-600"
+  }, "© BESCOM Control Room Simulator · SCADA Theme 9 Security")));
+}
+
+function OtpVerification({
+  email,
+  debugOtp,
+  onVerified,
+  onBack
+}) {
+  const {
+    actions
+  } = useGrid();
+  const [digits, setDigits] = useState(['', '', '', '', '', '']);
+  const [busy, setBusy] = useState(false);
+  const [resending, setResending] = useState(false);
+  const [err, setErr] = useState('');
+  const [countdown, setCountdown] = useState(300);
+  const [resendCooldown, setResendCooldown] = useState(45);
+  const [activeDebugOtp, setActiveDebugOtp] = useState(debugOtp || '');
+  const inputsRef = useRef([]);
+
+  useEffect(() => {
+    if (countdown <= 0) return;
+    const t = setInterval(() => setCountdown(c => Math.max(0, c - 1)), 1000);
+    return () => clearInterval(t);
+  }, [countdown]);
+
+  useEffect(() => {
+    if (resendCooldown <= 0) return;
+    const t = setInterval(() => setResendCooldown(c => Math.max(0, c - 1)), 1000);
+    return () => clearInterval(t);
+  }, [resendCooldown]);
+
+  useEffect(() => {
+    if (inputsRef.current[0]) {
+      inputsRef.current[0].focus();
+    }
+  }, []);
+
+  const handleChange = (index, val) => {
+    const clean = val.replace(/\D/g, '');
+    if (!clean) {
+      const copy = [...digits];
+      copy[index] = '';
+      setDigits(copy);
+      return;
+    }
+    const char = clean.slice(-1);
+    const copy = [...digits];
+    copy[index] = char;
+    setDigits(copy);
+    setErr('');
+    if (index < 5 && inputsRef.current[index + 1]) {
+      inputsRef.current[index + 1].focus();
+    }
+  };
+
+  const handleKeyDown = (index, e) => {
+    if (e.key === 'Backspace' && !digits[index] && index > 0 && inputsRef.current[index - 1]) {
+      inputsRef.current[index - 1].focus();
+    } else if (e.key === 'ArrowLeft' && index > 0 && inputsRef.current[index - 1]) {
+      inputsRef.current[index - 1].focus();
+    } else if (e.key === 'ArrowRight' && index < 5 && inputsRef.current[index + 1]) {
+      inputsRef.current[index + 1].focus();
+    }
+  };
+
+  const handlePaste = e => {
+    e.preventDefault();
+    const paste = (e.clipboardData.getData('text') || '').trim().replace(/\D/g, '').slice(0, 6);
+    if (!paste) return;
+    const copy = [...digits];
+    for (let i = 0; i < 6; i++) {
+      copy[i] = paste[i] || '';
+    }
+    setDigits(copy);
+    const nextIdx = Math.min(5, paste.length);
+    if (inputsRef.current[nextIdx]) {
+      inputsRef.current[nextIdx].focus();
+    }
+  };
+
+  const autoFillCode = codeToFill => {
+    const code = String(codeToFill || activeDebugOtp || '123456').slice(0, 6);
+    const copy = code.split('').slice(0, 6);
+    while (copy.length < 6) copy.push('');
+    setDigits(copy);
+    setErr('');
+    if (inputsRef.current[5]) {
+      inputsRef.current[5].focus();
+    }
+  };
+
+  const submit = async e => {
+    if (e) e.preventDefault();
+    const otp = digits.join('');
+    if (otp.length < 6) {
+      setErr('Please enter all 6 digits of the verification code.');
+      return;
+    }
+    setBusy(true);
+    setErr('');
+    const res = await actions.verifyOtp({
+      email,
+      otp
+    });
+    setBusy(false);
+    if (res.ok && res.user) {
+      onVerified(res.user);
+    } else {
+      setErr(res.error || 'Verification failed. Please check your code.');
+    }
+  };
+
+  const handleResend = async () => {
+    if (resendCooldown > 0 || resending) return;
+    setResending(true);
+    setErr('');
+    const res = await actions.resendOtp(email);
+    setResending(false);
+    if (res.ok) {
+      setResendCooldown(45);
+      setCountdown(300);
+      if (res.debug_otp) {
+        setActiveDebugOtp(res.debug_otp);
+      }
+    } else {
+      setErr(res.error || 'Failed to resend code.');
+    }
+  };
+
+  const fmtMinSec = s => {
+    const m = Math.floor(s / 60);
+    const sec = s % 60;
+    return `${m}:${sec.toString().padStart(2, '0')}`;
+  };
+
+  return /*#__PURE__*/React.createElement("div", {
+    className: "min-h-screen flex items-center justify-center p-4 grid-noise relative overflow-hidden"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "absolute inset-0 opacity-30 pointer-events-none"
+  }, /*#__PURE__*/React.createElement("svg", {
+    viewBox: "0 0 1000 600",
+    className: "w-full h-full"
+  }, [...Array(8)].map((_, i) => /*#__PURE__*/React.createElement("line", {
+    key: i,
+    x1: i * 130,
+    y1: "0",
+    x2: i * 130,
+    y2: "600",
+    stroke: "#15233B",
+    strokeWidth: "1"
+  })), [...Array(6)].map((_, i) => /*#__PURE__*/React.createElement("line", {
+    key: i,
+    x1: "0",
+    y1: i * 100,
+    x2: "1000",
+    y2: i * 100,
+    stroke: "#15233B",
+    strokeWidth: "1"
+  })))), /*#__PURE__*/React.createElement("div", {
+    className: "relative w-full max-w-md"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "text-center mb-6"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-grid-card border border-restoration/40 mb-3 shadow-lg shadow-cyan-950/40 relative"
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "shieldCheck",
+    className: "w-8 h-8 text-restoration"
+  }), /*#__PURE__*/React.createElement("span", {
+    className: "absolute -top-1 -right-1 flex h-3 w-3"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"
+  }), /*#__PURE__*/React.createElement("span", {
+    className: "relative inline-flex rounded-full h-3 w-3 bg-emerald-500"
+  }))), /*#__PURE__*/React.createElement("h1", {
+    className: "text-2xl font-bold text-slate-50"
+  }, "Two-Factor Authentication"), /*#__PURE__*/React.createElement("p", {
+    className: "text-sm text-slate-400 mt-1"
+  }, "BESCOM SCADA Operator Verification Step"), /*#__PURE__*/React.createElement("div", {
+    className: "mt-2 inline-flex items-center gap-2 text-[11px] text-slate-500 font-mono"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "badge-dot bg-healthy blip"
+  }), "Security Level: High · 2FA Protocol")), /*#__PURE__*/React.createElement("div", {
+    className: "bg-grid-card border border-grid-border rounded-xl p-6 md:p-8 shadow-2xl relative overflow-hidden space-y-5"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "bg-grid-panel border border-grid-border/80 rounded-lg p-3 text-center"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "text-xs text-slate-400 mb-1"
+  }, "A 6-digit verification code has been dispatched to:"), /*#__PURE__*/React.createElement("div", {
+    className: "inline-flex items-center gap-1.5 font-mono text-sm font-semibold text-cyan-400 bg-cyan-950/40 border border-cyan-800/40 rounded px-2.5 py-1"
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "mail",
+    className: "w-3.5 h-3.5 text-cyan-400"
+  }), email || "admin@bescom.sim")), activeDebugOtp && /*#__PURE__*/React.createElement("div", {
+    onClick: () => autoFillCode(activeDebugOtp),
+    className: "cursor-pointer group bg-emerald-950/30 hover:bg-emerald-950/50 border border-emerald-500/40 hover:border-emerald-500 rounded-lg p-2.5 text-xs text-emerald-300 flex items-center justify-between transition-all"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center gap-2"
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "mail",
+    className: "w-4 h-4 text-emerald-400"
+  }), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("span", {
+    className: "font-semibold block text-emerald-200"
+  }, "Dispatched Code: " + activeDebugOtp), /*#__PURE__*/React.createElement("span", {
+    className: "text-[10px] text-emerald-400/80"
+  }, "Click to auto-fill for instant test"))), /*#__PURE__*/React.createElement("span", {
+    className: "text-[11px] font-semibold bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded border border-emerald-500/30 group-hover:bg-emerald-500 group-hover:text-slate-900 transition-colors"
+  }, "Auto-fill")), /*#__PURE__*/React.createElement("form", {
+    onSubmit: submit,
+    className: "space-y-5"
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    className: "block text-xs uppercase tracking-wider text-slate-400 mb-2 font-semibold text-center"
+  }, "Enter 6-Digit Passcode"), /*#__PURE__*/React.createElement("div", {
+    className: "flex justify-center gap-2 sm:gap-2.5",
+    onPaste: handlePaste
+  }, digits.map((digit, i) => /*#__PURE__*/React.createElement("input", {
+    key: i,
+    ref: el => inputsRef.current[i] = el,
+    type: "text",
+    inputMode: "numeric",
+    maxLength: 1,
+    value: digit,
+    onChange: e => handleChange(i, e.target.value),
+    onKeyDown: e => handleKeyDown(i, e),
+    className: "w-11 h-13 sm:w-12 sm:h-14 text-center font-mono font-bold text-xl sm:text-2xl bg-grid-panel border " + (digit ? "border-restoration ring-1 ring-restoration/50 text-cyan-300" : "border-grid-border text-slate-100") + " rounded-lg focus:border-restoration focus:ring-2 focus:ring-restoration/60 focus:outline-none transition-all"
+  })))), /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center justify-between text-xs text-slate-400 px-1 pt-1"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center gap-1.5"
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "timer",
+    className: "w-3.5 h-3.5 text-amber-400"
+  }), /*#__PURE__*/React.createElement("span", null, "Expires in:"), /*#__PURE__*/React.createElement("span", {
+    className: "font-mono font-semibold " + (countdown < 60 ? "text-faulted animate-pulse" : "text-slate-200")
+  }, fmtMinSec(countdown))), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: handleResend,
+    disabled: resendCooldown > 0 || resending,
+    className: "text-restoration hover:text-restoration/80 disabled:text-slate-500 disabled:cursor-not-allowed font-medium transition-colors cursor-pointer"
+  }, resending ? "Resending…" : resendCooldown > 0 ? `Resend code in ${resendCooldown}s` : "Resend Code")), err && /*#__PURE__*/React.createElement("div", {
+    className: "text-xs text-faulted bg-faulted/10 border border-faulted/30 rounded-lg px-3 py-2 flex items-center gap-2"
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "alertCircle",
+    className: "w-4 h-4 shrink-0"
+  }), err), /*#__PURE__*/React.createElement("button", {
+    type: "submit",
+    disabled: busy || digits.join('').length < 6,
+    className: "w-full bg-restoration hover:bg-restoration/90 disabled:opacity-50 text-grid-bg font-semibold py-2.5 rounded-lg flex items-center justify-center gap-2 transition-colors cursor-pointer shadow-lg shadow-cyan-950/50"
+  }, busy ? /*#__PURE__*/React.createElement(Icon, {
+    name: "refresh",
+    className: "w-4 h-4 spin-slow"
+  }) : /*#__PURE__*/React.createElement(Icon, {
+    name: "check",
+    className: "w-4 h-4"
+  }), busy ? "Verifying OTP…" : "Verify & Connect to Dashboard"), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: onBack,
+    className: "w-full text-xs text-slate-400 hover:text-slate-200 text-center py-1 transition-colors cursor-pointer"
+  }, "← Back to Login / Change Email"))), /*#__PURE__*/React.createElement("div", {
+    className: "mt-4 text-center text-[11px] text-slate-600"
+  }, "© BESCOM Control Room Simulator · 2FA Security Enhanced")));
+}
+function Sidebar({
+  page,
+  setPage,
+  open,
+  setOpen
+}) {
+  return /*#__PURE__*/React.createElement(React.Fragment, null, open && /*#__PURE__*/React.createElement("div", {
+    className: "fixed inset-0 bg-black/50 z-30 lg:hidden",
+    onClick: () => setOpen(false)
+  }), /*#__PURE__*/React.createElement("aside", {
+    className: "fixed lg:static z-40 lg:z-auto top-0 left-0 h-full lg:h-screen w-60 bg-grid-panel border-r border-grid-border flex flex-col transition-transform " + (open ? 'translate-x-0' : '-translate-x-full lg:translate-x-0')
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "px-4 py-4 border-b border-grid-border/60 flex items-center gap-2"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "w-9 h-9 rounded-lg bg-grid-card border border-restoration/40 flex items-center justify-center"
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "zap",
+    className: "w-5 h-5 text-restoration"
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    className: "text-sm font-bold text-slate-50 leading-tight"
+  }, "Fault to Recovery"), /*#__PURE__*/React.createElement("div", {
+    className: "text-[10px] text-slate-500 font-mono"
+  }, "BESCOM \xB7 Theme 9"))), /*#__PURE__*/React.createElement("nav", {
+    className: "flex-1 overflow-y-auto py-2"
+  }, PAGES.map(p => /*#__PURE__*/React.createElement("button", {
+    key: p.id,
+    onClick: () => {
+      setPage(p.id);
+      setOpen(false);
+    },
+    className: "w-full flex items-center gap-3 px-4 py-2.5 text-sm text-left transition-colors " + (page === p.id ? 'nav-active text-slate-50' : 'text-slate-400 hover:text-slate-200 hover:bg-grid-card/40')
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: p.icon,
+    className: "w-4 h-4"
+  }), /*#__PURE__*/React.createElement("span", null, p.label)))), /*#__PURE__*/React.createElement("div", {
+    className: "px-4 py-3 border-t border-grid-border/60 text-[10px] text-slate-600 font-mono"
+  }, "v1.0.0 \xB7 mock data")));
+}
+function TopBar({
+  user,
+  onLogout,
+  pageLabel,
+  onMenu
+}) {
+  const {
+    grid,
+    backendConnected
+  } = useGrid();
+  const phase = grid.statusPhase;
+  const phaseMeta = {
+    healthy: {
+      label: 'GRID HEALTHY',
+      cls: 'text-healthy border-healthy/40 bg-healthy/10',
+      icon: 'checkCircle'
+    },
+    fault_detected: {
+      label: 'FAULT DETECTED',
+      cls: 'text-faulted border-faulted/40 bg-faulted/10',
+      icon: 'siren'
+    },
+    localised: {
+      label: 'FAULT LOCALISED',
+      cls: 'text-warning border-warning/40 bg-warning/10',
+      icon: 'crosshair'
+    },
+    planning: {
+      label: 'RESTORATION PLANNING',
+      cls: 'text-restoration border-restoration/40 bg-restoration/10',
+      icon: 'route'
+    },
+    restoring: {
+      label: 'RESTORING',
+      cls: 'text-restoration border-restoration/40 bg-restoration/10',
+      icon: 'refresh'
+    },
+    restored: {
+      label: 'RESTORED',
+      cls: 'text-healthy border-healthy/40 bg-healthy/10',
+      icon: 'checkCircle'
+    },
+    no_route: {
+      label: 'NO FEASIBLE ROUTE',
+      cls: 'text-faulted border-faulted/40 bg-faulted/10',
+      icon: 'ban'
+    }
+  };
+  const m = phaseMeta[phase] || phaseMeta.healthy;
+  return /*#__PURE__*/React.createElement("header", {
+    className: "sticky top-0 z-20 bg-grid-bg/90 backdrop-blur border-b border-grid-border px-4 py-3 flex items-center gap-3"
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "lg:hidden text-slate-300",
+    onClick: onMenu
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "menu",
+    className: "w-6 h-6"
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "flex-1 min-w-0"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "text-xs text-slate-500 uppercase tracking-wider"
+  }, "Control Room"), /*#__PURE__*/React.createElement("div", {
+    className: "text-base font-semibold text-slate-100 truncate"
+  }, pageLabel)), /*#__PURE__*/React.createElement("div", {
+    className: "hidden sm:inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-bold font-mono " + m.cls
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: m.icon,
+    className: "w-4 h-4"
+  }), m.label), /*#__PURE__*/React.createElement("div", {
+    className: "hidden md:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-mono border " + (backendConnected ? "text-healthy border-healthy/40 bg-healthy/10" : "text-amber-400 border-amber-500/40 bg-amber-500/10")
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "badge-dot " + (backendConnected ? "bg-healthy blip" : "bg-warning")
+  }), backendConnected ? "Backend: Online (Port 5000)" : "Standalone Mode"), /*#__PURE__*/React.createElement("div", {
+    className: "hidden md:flex items-center gap-2 text-xs text-slate-400"
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "clock",
+    className: "w-4 h-4"
+  }), /*#__PURE__*/React.createElement("span", {
+    className: "font-mono"
+  }, fmtTime(NOW()))), /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center gap-2 pl-3 border-l border-grid-border"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "w-8 h-8 rounded-full bg-grid-card border border-restoration/40 flex items-center justify-center text-restoration text-xs font-bold"
+  }, (user.name || 'OP').slice(0, 2).toUpperCase()), /*#__PURE__*/React.createElement("div", {
+    className: "hidden sm:block text-xs"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "text-slate-200 font-semibold leading-tight"
+  }, user.name), /*#__PURE__*/React.createElement("div", {
+    className: "text-slate-500"
+  }, user.role)), /*#__PURE__*/React.createElement("button", {
+    onClick: onLogout,
+    title: "Logout",
+    className: "text-slate-400 hover:text-faulted ml-1"
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "logOut",
+    className: "w-5 h-5"
+  }))));
+}
+
+/* ===== PAGES ===== */
+
+/* Dashboard: KPI cards + Interactive Network Map + Fault-to-Recovery Status Banner */
+function DashboardPage() {
+  const {
+    grid
+  } = useGrid();
+  const [selection, setSelection] = useState(null);
+  const k = grid.kpis;
+  const phase = grid.statusPhase;
+  const activeFault = grid.faults.find(f => f.id === grid.activeFaultId);
+  const banner = (() => {
+    const map = {
+      healthy: {
+        step: 0,
+        total: 4,
+        color: 'healthy',
+        icon: 'checkCircle',
+        title: 'Grid Operating Normally',
+        body: 'All feeders energised. No active faults. Network in steady-state nominal condition.'
+      },
+      fault_detected: {
+        step: 1,
+        total: 4,
+        color: 'faulted',
+        icon: 'siren',
+        title: 'Fault Detected — Protective Relays Tripping',
+        body: activeFault ? activeFault.desc : 'Anomaly detected. Protection scheme activated.'
+      },
+      localised: {
+        step: 2,
+        total: 4,
+        color: 'warning',
+        icon: 'crosshair',
+        title: 'Fault Localised & Isolated',
+        body: activeFault ? 'Relay trip sequence complete. Faulted segment: ' + activeFault.edgeName + '. ' + (activeFault.affectedDesc || '') + '.' : 'Fault segment isolated.'
+      },
+      planning: {
+        step: 3,
+        total: 4,
+        color: 'restoration',
+        icon: 'route',
+        title: 'Restoration Plan Computed',
+        body: 'Decision engine evaluating alternative supply paths and capacity constraints.'
+      },
+      restoring: {
+        step: 3,
+        total: 4,
+        color: 'restoration',
+        icon: 'refresh',
+        title: 'Restoration In Progress',
+        body: 'Executing switching actions — backfeeding affected areas via tie-switch.'
+      },
+      restored: {
+        step: 4,
+        total: 4,
+        color: 'healthy',
+        icon: 'checkCircle',
+        title: 'Supply Restored',
+        body: 'Self-healing complete. Affected areas re-energised via alternative route.'
+      },
+      no_route: {
+        step: 3,
+        total: 4,
+        color: 'faulted',
+        icon: 'ban',
+        title: 'No Feasible Restoration Route',
+        body: 'Alternative feeders exceed thermal capacity. Manual dispatch / crew required.'
+      }
+    };
+    return map[phase] || map.healthy;
+  })();
+  const steps = ['Detect', 'Localise', 'Plan', 'Restore'];
+  return /*#__PURE__*/React.createElement("div", {
+    className: "space-y-5"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "rounded-xl border p-4 flex items-start gap-4 " + (banner.color === 'healthy' ? 'border-healthy/40 bg-healthy/5' : banner.color === 'faulted' ? 'border-faulted/40 bg-faulted/5' : banner.color === 'warning' ? 'border-warning/40 bg-warning/5' : 'border-restoration/40 bg-restoration/5')
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "w-11 h-11 rounded-lg flex items-center justify-center shrink-0 " + (banner.color === 'healthy' ? 'bg-healthy/15 text-healthy' : banner.color === 'faulted' ? 'bg-faulted/15 text-faulted' : banner.color === 'warning' ? 'bg-warning/15 text-warning' : 'bg-restoration/15 text-restoration')
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: banner.icon,
+    className: "w-6 h-6"
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "flex-1 min-w-0"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex flex-wrap items-center gap-2"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "text-xs uppercase tracking-wider text-slate-400 font-semibold"
+  }, "Fault-to-Recovery Status"), /*#__PURE__*/React.createElement(Badge, {
+    status: banner.color === 'healthy' ? 'healthy' : banner.color === 'faulted' ? 'faulted' : banner.color === 'warning' ? 'warning' : 'restoration',
+    label: banner.title
+  })), /*#__PURE__*/React.createElement("p", {
+    className: "text-sm text-slate-300 mt-1.5"
+  }, banner.body), /*#__PURE__*/React.createElement("div", {
+    className: "mt-3 flex items-center gap-1"
+  }, steps.map((s, i) => {
+    const done = banner.step > i;
+    const active = banner.step === i + 1 || phase === 'healthy' && i === 0;
+    const cls = done ? 'bg-healthy text-grid-bg' : active ? 'bg-restoration text-grid-bg' : 'bg-grid-card text-slate-500';
+    return /*#__PURE__*/React.createElement("div", {
+      key: s,
+      className: "flex items-center gap-1"
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "px-2.5 py-1 rounded-md text-[11px] font-semibold font-mono " + cls
+    }, (i + 1).toString().padStart(2, '0'), " ", s), i < steps.length - 1 && /*#__PURE__*/React.createElement("div", {
+      className: "w-4 h-px " + (done ? 'bg-healthy' : 'bg-grid-border')
+    }));
+  })))), /*#__PURE__*/React.createElement("div", {
+    className: "grid grid-cols-2 lg:grid-cols-4 gap-4"
+  }, /*#__PURE__*/React.createElement(KPICard, {
+    icon: "gauge",
+    label: "Grid Health",
+    value: k.gridHealthPct,
+    unit: "%",
+    sub: "of segments healthy",
+    accent: k.gridHealthPct >= 80 ? 'healthy' : k.gridHealthPct >= 50 ? 'warning' : 'faulted',
+    trend: null
+  }), /*#__PURE__*/React.createElement(KPICard, {
+    icon: "zap",
+    label: "Active Feeders",
+    value: k.activeFeeders,
+    unit: "/ 3",
+    sub: "energised feeders",
+    accent: "restoration"
+  }), /*#__PURE__*/React.createElement(KPICard, {
+    icon: "users",
+    label: "Affected Consumers",
+    value: k.affectedConsumers.toLocaleString(),
+    unit: "",
+    sub: "disconnected loads",
+    accent: k.affectedConsumers > 0 ? 'faulted' : 'healthy'
+  }), /*#__PURE__*/React.createElement(KPICard, {
+    icon: "timer",
+    label: "Avg Restoration",
+    value: k.avgRestorationSec,
+    unit: "s",
+    sub: k.restoredFaults + ' restored / ' + k.totalFaults + ' faults',
+    accent: "healthy"
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "grid grid-cols-1 xl:grid-cols-3 gap-4"
+  }, /*#__PURE__*/React.createElement(Card, {
+    title: "Interactive Network Map",
+    icon: "network",
+    className: "xl:col-span-2",
+    action: /*#__PURE__*/React.createElement("div", {
+      className: "flex items-center gap-2 text-[11px] text-slate-400"
+    }, /*#__PURE__*/React.createElement("span", {
+      className: "inline-flex items-center gap-1"
+    }, /*#__PURE__*/React.createElement("span", {
+      className: "badge-dot bg-healthy"
+    }), "Healthy"), /*#__PURE__*/React.createElement("span", {
+      className: "inline-flex items-center gap-1"
+    }, /*#__PURE__*/React.createElement("span", {
+      className: "badge-dot bg-warning"
+    }), "Warning"), /*#__PURE__*/React.createElement("span", {
+      className: "inline-flex items-center gap-1"
+    }, /*#__PURE__*/React.createElement("span", {
+      className: "badge-dot bg-faulted"
+    }), "Faulted"), /*#__PURE__*/React.createElement("span", {
+      className: "inline-flex items-center gap-1"
+    }, /*#__PURE__*/React.createElement("span", {
+      className: "badge-dot bg-restoration"
+    }), "Restore"), /*#__PURE__*/React.createElement("span", {
+      className: "inline-flex items-center gap-1"
+    }, /*#__PURE__*/React.createElement("span", {
+      className: "badge-dot bg-isolated"
+    }), "Isolated"))
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "border border-grid-border/60 rounded-lg overflow-hidden bg-grid-panel"
+  }, /*#__PURE__*/React.createElement(NetworkMap, {
+    grid: grid,
+    onSelect: setSelection,
+    selected: selection,
+    highlightEdge: activeFault ? activeFault.edgeId : null
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "mt-2 text-[11px] text-slate-500 flex items-center gap-2"
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "eye",
+    className: "w-3.5 h-3.5"
+  }), "Click any node or line for live simulated telemetry (Voltage kV, Current A, Load %, Status).")), /*#__PURE__*/React.createElement("div", {
+    className: "space-y-4"
+  }, /*#__PURE__*/React.createElement(Card, {
+    title: "Network Inventory",
+    icon: "layers"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "grid grid-cols-2 gap-2 text-sm"
+  }, /*#__PURE__*/React.createElement(StatRow, {
+    label: "Substations",
+    value: grid.nodes.filter(n => n.type === 'substation').length
+  }), /*#__PURE__*/React.createElement(StatRow, {
+    label: "Feeders",
+    value: grid.nodes.filter(n => n.type === 'feeder').length
+  }), /*#__PURE__*/React.createElement(StatRow, {
+    label: "Transformers",
+    value: grid.nodes.filter(n => n.type === 'transformer').length
+  }), /*#__PURE__*/React.createElement(StatRow, {
+    label: "Consumer Areas",
+    value: grid.nodes.filter(n => n.type === 'consumer').length
+  }), /*#__PURE__*/React.createElement(StatRow, {
+    label: "Line Segments",
+    value: grid.edges.filter(e => !e.isTie).length
+  }), /*#__PURE__*/React.createElement(StatRow, {
+    label: "Tie-Switches",
+    value: grid.edges.filter(e => e.isTie).length
+  }))), /*#__PURE__*/React.createElement(Card, {
+    title: "Active Fault",
+    icon: "siren"
+  }, activeFault ? /*#__PURE__*/React.createElement("div", {
+    className: "space-y-2"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center justify-between"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "text-sm font-semibold text-slate-100"
+  }, activeFault.id), /*#__PURE__*/React.createElement(Badge, {
+    status: activeFault.severity
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "text-xs text-slate-400"
+  }, activeFault.type), /*#__PURE__*/React.createElement("div", {
+    className: "text-xs text-slate-300"
+  }, activeFault.desc), /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center gap-2 text-[11px] text-slate-500 font-mono pt-1"
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "clock",
+    className: "w-3.5 h-3.5"
+  }), fmtDateTime(activeFault.ts))) : /*#__PURE__*/React.createElement("div", {
+    className: "flex flex-col items-center py-6 text-center"
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "checkCircle",
+    className: "w-10 h-10 text-healthy mb-2"
+  }), /*#__PURE__*/React.createElement("div", {
+    className: "text-sm text-slate-300"
+  }, "No active faults"), /*#__PURE__*/React.createElement("div", {
+    className: "text-xs text-slate-500 mt-1"
+  }, "Trigger a scenario from the Simulation Centre."))), /*#__PURE__*/React.createElement(Card, {
+    title: "Quick Actions",
+    icon: "command"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "space-y-2 text-sm"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center justify-between"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "text-slate-400"
+  }, "Total events logged"), /*#__PURE__*/React.createElement("span", {
+    className: "font-mono text-slate-200"
+  }, grid.events.length)), /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center justify-between"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "text-slate-400"
+  }, "Open anomalies"), /*#__PURE__*/React.createElement("span", {
+    className: "font-mono text-slate-200"
+  }, grid.anomalies.length)), /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center justify-between"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "text-slate-400"
+  }, "SCADA node"), /*#__PURE__*/React.createElement("span", {
+    className: "font-mono text-restoration"
+  }, grid.meta.scada)))))), /*#__PURE__*/React.createElement(TelemetryPanel, {
+    grid: grid,
+    selection: selection,
+    onClose: () => setSelection(null)
+  }));
+}
+function MonitoringPage() {
+  const {
+    grid
+  } = useGrid();
+  const rows = grid.edges.filter(e => !e.isTie);
+  const feeders = ['F1', 'F2', 'F3'];
+  const hist = fid => grid.telemetryHistory[fid] || [];
+  const vSeries = feeders.map((fid, i) => ({
+    name: fid,
+    color: ['#22D3EE', '#A78BFA', '#34D399'][i],
+    data: hist(fid).map(p => ({
+      t: p.t,
+      v: p.v
+    }))
+  }));
+  const aSeries = feeders.map((fid, i) => ({
+    name: fid,
+    color: ['#22D3EE', '#A78BFA', '#34D399'][i],
+    data: hist(fid).map(p => ({
+      t: p.t,
+      v: p.a
+    }))
+  }));
+  const pSeries = feeders.map((fid, i) => ({
+    name: fid,
+    color: ['#22D3EE', '#A78BFA', '#34D399'][i],
+    data: hist(fid).map(p => ({
+      t: p.t,
+      v: p.p
+    }))
+  }));
+  const feederOf = fid => grid.nodes.find(n => n.id === fid);
+  const srcEdge = fid => grid.edges.find(e => e.to === fid);
+  return /*#__PURE__*/React.createElement("div", {
+    className: "space-y-5"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center justify-between flex-wrap gap-3"
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("h2", {
+    className: "text-lg font-bold text-slate-100"
+  }, "Real-Time Grid Telemetry"), /*#__PURE__*/React.createElement("p", {
+    className: "text-sm text-slate-400"
+  }, "Simulated SCADA samples refreshing every ~2.6s across all feeders & distribution transformers.")), /*#__PURE__*/React.createElement("div", {
+    className: "inline-flex items-center gap-2 text-xs text-slate-400"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "badge-dot bg-healthy blip"
+  }), "Live stream \xB7 ", fmtTime(NOW()))), /*#__PURE__*/React.createElement("div", {
+    className: "grid grid-cols-1 lg:grid-cols-3 gap-4"
+  }, /*#__PURE__*/React.createElement(Card, {
+    title: "Voltage (kV) \u2014 Feeders",
+    icon: "zap"
+  }, /*#__PURE__*/React.createElement(LineChart, {
+    series: vSeries,
+    yLabel: "kV",
+    min: 0,
+    max: 35,
+    unit: "",
+    height: 170
+  }), /*#__PURE__*/React.createElement("div", {
+    className: "mt-2 flex items-center gap-3 text-[11px]"
+  }, feeders.map((fid, i) => /*#__PURE__*/React.createElement("span", {
+    key: fid,
+    className: "inline-flex items-center gap-1 text-slate-400"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "badge-dot",
+    style: {
+      background: ['#22D3EE', '#A78BFA', '#34D399'][i]
+    }
+  }), fid)))), /*#__PURE__*/React.createElement(Card, {
+    title: "Current (A) \u2014 Feeders",
+    icon: "activity"
+  }, /*#__PURE__*/React.createElement(LineChart, {
+    series: aSeries,
+    yLabel: "A",
+    min: 0,
+    unit: "A",
+    height: 170
+  }), /*#__PURE__*/React.createElement("div", {
+    className: "mt-2 flex items-center gap-3 text-[11px]"
+  }, feeders.map((fid, i) => /*#__PURE__*/React.createElement("span", {
+    key: fid,
+    className: "inline-flex items-center gap-1 text-slate-400"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "badge-dot",
+    style: {
+      background: ['#22D3EE', '#A78BFA', '#34D399'][i]
+    }
+  }), fid)))), /*#__PURE__*/React.createElement(Card, {
+    title: "Power Flow (MW) \u2014 Feeders",
+    icon: "barChart"
+  }, /*#__PURE__*/React.createElement(LineChart, {
+    series: pSeries,
+    yLabel: "MW",
+    min: 0,
+    unit: "MW",
+    height: 170
+  }), /*#__PURE__*/React.createElement("div", {
+    className: "mt-2 flex items-center gap-3 text-[11px]"
+  }, feeders.map((fid, i) => /*#__PURE__*/React.createElement("span", {
+    key: fid,
+    className: "inline-flex items-center gap-1 text-slate-400"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "badge-dot",
+    style: {
+      background: ['#22D3EE', '#A78BFA', '#34D399'][i]
+    }
+  }), fid))))), /*#__PURE__*/React.createElement(Card, {
+    title: "Network Telemetry Table",
+    icon: "list",
+    action: /*#__PURE__*/React.createElement("div", {
+      className: "text-[11px] text-slate-500 font-mono"
+    }, rows.length, " segments monitored")
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "overflow-x-auto -mx-4 px-4 max-h-[460px] overflow-y-auto"
+  }, /*#__PURE__*/React.createElement("table", {
+    className: "telemetry w-full text-sm"
+  }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", {
+    className: "text-[11px] uppercase tracking-wider text-slate-500"
+  }, /*#__PURE__*/React.createElement("th", {
+    className: "text-left py-2 pr-4 font-semibold"
+  }, "Segment"), /*#__PURE__*/React.createElement("th", {
+    className: "text-left py-2 pr-4 font-semibold"
+  }, "From \u2192 To"), /*#__PURE__*/React.createElement("th", {
+    className: "text-right py-2 pr-4 font-semibold"
+  }, "Voltage (kV)"), /*#__PURE__*/React.createElement("th", {
+    className: "text-right py-2 pr-4 font-semibold"
+  }, "Current (A)"), /*#__PURE__*/React.createElement("th", {
+    className: "text-right py-2 pr-4 font-semibold"
+  }, "Load (%)"), /*#__PURE__*/React.createElement("th", {
+    className: "text-right py-2 pr-4 font-semibold"
+  }, "Power (MW)"), /*#__PURE__*/React.createElement("th", {
+    className: "text-right py-2 pr-4 font-semibold"
+  }, "Switch"), /*#__PURE__*/React.createElement("th", {
+    className: "text-left py-2 font-semibold"
+  }, "Status"))), /*#__PURE__*/React.createElement("tbody", null, rows.map(e => {
+    const t = e.telemetry || {};
+    const loadCls = t.loadPct >= 90 ? 'text-faulted' : t.loadPct >= 78 ? 'text-warning' : 'text-slate-200';
+    const barW = Math.min(100, t.loadPct || 0);
+    const barColor = t.loadPct >= 90 ? '#EF4444' : t.loadPct >= 78 ? '#F59E0B' : '#10B981';
+    return /*#__PURE__*/React.createElement("tr", {
+      key: e.id,
+      className: "border-t border-grid-border/40 hover:bg-grid-panel/60"
+    }, /*#__PURE__*/React.createElement("td", {
+      className: "py-2 pr-4 text-slate-200 font-medium"
+    }, e.name), /*#__PURE__*/React.createElement("td", {
+      className: "py-2 pr-4 text-slate-400 font-mono text-xs"
+    }, e.from, " \u2192 ", e.to), /*#__PURE__*/React.createElement("td", {
+      className: "py-2 pr-4 text-right font-mono " + (t.voltageKV < 1 && e.status === 'isolated' ? 'text-slate-600' : 'text-slate-200')
+    }, (t.voltageKV || 0).toFixed(2)), /*#__PURE__*/React.createElement("td", {
+      className: "py-2 pr-4 text-right font-mono " + (t.currentA === 0 ? 'text-slate-600' : 'text-slate-200')
+    }, t.currentA || 0), /*#__PURE__*/React.createElement("td", {
+      className: "py-2 pr-4 text-right"
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "flex items-center justify-end gap-2"
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "w-16 h-1.5 bg-grid-border rounded-full overflow-hidden"
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "h-full rounded-full",
+      style: {
+        width: barW + '%',
+        background: barColor
+      }
+    })), /*#__PURE__*/React.createElement("span", {
+      className: "font-mono w-9 text-right " + loadCls
+    }, t.loadPct || 0))), /*#__PURE__*/React.createElement("td", {
+      className: "py-2 pr-4 text-right font-mono text-slate-200"
+    }, (t.powerMW || 0).toFixed(2)), /*#__PURE__*/React.createElement("td", {
+      className: "py-2 pr-4 text-right font-mono text-xs text-slate-400"
+    }, e.switch || '—'), /*#__PURE__*/React.createElement("td", {
+      className: "py-2"
+    }, /*#__PURE__*/React.createElement(Badge, {
+      status: e.status
+    })));
+  }))))), /*#__PURE__*/React.createElement("div", {
+    className: "grid grid-cols-1 md:grid-cols-3 gap-4"
+  }, feeders.map(fid => {
+    const f = feederOf(fid);
+    const e = srcEdge(fid);
+    const t = e ? e.telemetry : {};
+    return /*#__PURE__*/React.createElement(Card, {
+      key: fid,
+      title: f.name,
+      icon: "zap"
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "grid grid-cols-2 gap-2"
+    }, /*#__PURE__*/React.createElement(StatRow, {
+      label: "Source",
+      value: f.feederOf
+    }), /*#__PURE__*/React.createElement(StatRow, {
+      label: "Capacity",
+      value: f.capacityMW + ' MW'
+    }), /*#__PURE__*/React.createElement(StatRow, {
+      label: "Voltage",
+      value: (t.voltageKV || 0).toFixed(2) + ' kV',
+      good: t.voltageKV > 0
+    }), /*#__PURE__*/React.createElement(StatRow, {
+      label: "Current",
+      value: (t.currentA || 0) + ' A',
+      good: t.currentA > 0
+    }), /*#__PURE__*/React.createElement(StatRow, {
+      label: "Load",
+      value: (t.loadPct || 0) + ' %',
+      good: (t.loadPct || 0) < 78
+    }), /*#__PURE__*/React.createElement(StatRow, {
+      label: "Status",
+      value: e ? e.status.toUpperCase() : '—',
+      good: e && e.status === 'healthy'
+    })));
+  })));
+}
+function FaultDetectPage() {
+  const {
+    grid
+  } = useGrid();
+  const anomalies = grid.anomalies;
+  const critical = anomalies.filter(a => a.severity === 'critical').length;
+  const high = anomalies.filter(a => a.severity === 'high').length;
+  const med = anomalies.filter(a => a.severity === 'medium').length;
+  return /*#__PURE__*/React.createElement("div", {
+    className: "space-y-5"
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("h2", {
+    className: "text-lg font-bold text-slate-100"
+  }, "Fault Detection \u2014 Anomaly Log"), /*#__PURE__*/React.createElement("p", {
+    className: "text-sm text-slate-400"
+  }, "Threshold violations detected by the protection & SCADA analytics engine (overcurrent spikes, undervoltage drops, thermal overload).")), /*#__PURE__*/React.createElement("div", {
+    className: "grid grid-cols-2 md:grid-cols-4 gap-4"
+  }, /*#__PURE__*/React.createElement(KPICard, {
+    icon: "siren",
+    label: "Open Anomalies",
+    value: anomalies.length,
+    unit: "",
+    sub: "total violations",
+    accent: anomalies.length > 0 ? 'faulted' : 'healthy'
+  }), /*#__PURE__*/React.createElement(KPICard, {
+    icon: "alertTriangle",
+    label: "Critical",
+    value: critical,
+    unit: "",
+    sub: "immediate action",
+    accent: "faulted"
+  }), /*#__PURE__*/React.createElement(KPICard, {
+    icon: "alertCircle",
+    label: "High",
+    value: high,
+    unit: "",
+    sub: "urgent review",
+    accent: "warning"
+  }), /*#__PURE__*/React.createElement(KPICard, {
+    icon: "activity",
+    label: "Medium",
+    value: med,
+    unit: "",
+    sub: "monitor",
+    accent: "restoration"
+  })), /*#__PURE__*/React.createElement(Card, {
+    title: "Anomaly Log",
+    icon: "list",
+    action: /*#__PURE__*/React.createElement("div", {
+      className: "text-[11px] text-slate-500 font-mono"
+    }, "newest first")
+  }, anomalies.length === 0 ? /*#__PURE__*/React.createElement("div", {
+    className: "flex flex-col items-center py-12 text-center"
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "checkCircle",
+    className: "w-12 h-12 text-healthy mb-2"
+  }), /*#__PURE__*/React.createElement("div", {
+    className: "text-sm text-slate-300 font-semibold"
+  }, "All Clear \u2014 No Active Anomalies"), /*#__PURE__*/React.createElement("div", {
+    className: "text-xs text-slate-500 mt-1"
+  }, "All measurements within nominal thresholds. Trigger a fault scenario to populate this log.")) : /*#__PURE__*/React.createElement("div", {
+    className: "space-y-2"
+  }, anomalies.map(a => {
+    const over = a.value && a.threshold && a.metric === 'Overcurrent';
+    return /*#__PURE__*/React.createElement("div", {
+      key: a.id,
+      className: "rounded-lg border border-grid-border/60 bg-grid-panel/60 p-3 flex items-start gap-3 hover:border-grid-border transition-colors"
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "w-9 h-9 rounded-lg flex items-center justify-center shrink-0 " + (a.severity === 'critical' ? 'bg-faulted/15 text-faulted' : a.severity === 'high' ? 'bg-warning/15 text-warning' : 'bg-restoration/15 text-restoration')
+    }, /*#__PURE__*/React.createElement(Icon, {
+      name: a.severity === 'critical' ? 'siren' : a.severity === 'high' ? 'alertTriangle' : 'alertCircle',
+      className: "w-5 h-5"
+    })), /*#__PURE__*/React.createElement("div", {
+      className: "flex-1 min-w-0"
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "flex flex-wrap items-center gap-2"
+    }, /*#__PURE__*/React.createElement("span", {
+      className: "text-sm font-semibold text-slate-100"
+    }, a.metric), /*#__PURE__*/React.createElement(Badge, {
+      status: a.severity
+    }), /*#__PURE__*/React.createElement("span", {
+      className: "text-[11px] text-slate-500 font-mono"
+    }, a.id), a.faultId && /*#__PURE__*/React.createElement("span", {
+      className: "text-[11px] text-restoration font-mono"
+    }, a.faultId)), /*#__PURE__*/React.createElement("div", {
+      className: "text-xs text-slate-400 mt-1"
+    }, "Location: ", /*#__PURE__*/React.createElement("span", {
+      className: "text-slate-300"
+    }, a.location)), /*#__PURE__*/React.createElement("div", {
+      className: "mt-2 flex flex-wrap items-center gap-4 text-xs font-mono"
+    }, /*#__PURE__*/React.createElement("span", {
+      className: "text-slate-400"
+    }, "Measured: ", /*#__PURE__*/React.createElement("span", {
+      className: over ? 'text-faulted font-semibold' : 'text-slate-200'
+    }, a.value)), /*#__PURE__*/React.createElement("span", {
+      className: "text-slate-400"
+    }, "Threshold: ", /*#__PURE__*/React.createElement("span", {
+      className: "text-slate-300"
+    }, a.threshold)))), /*#__PURE__*/React.createElement("div", {
+      className: "text-right text-[11px] text-slate-500 font-mono shrink-0"
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "flex items-center gap-1 justify-end"
+    }, /*#__PURE__*/React.createElement(Icon, {
+      name: "clock",
+      className: "w-3 h-3"
+    }), fmtTime(a.ts)), /*#__PURE__*/React.createElement("div", {
+      className: "mt-0.5"
+    }, fmtDateTime(a.ts).split(' ')[1])));
+  }))), /*#__PURE__*/React.createElement(Card, {
+    title: "Protection Threshold Reference",
+    icon: "shield"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "grid grid-cols-1 md:grid-cols-3 gap-3 text-sm"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "rounded-lg bg-grid-panel/60 border border-grid-border/50 p-3"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "text-xs text-slate-400 uppercase tracking-wider mb-2"
+  }, "Overcurrent (50/51)"), /*#__PURE__*/React.createElement(StatRow, {
+    label: "Pickup threshold",
+    value: "300 A"
+  }), /*#__PURE__*/React.createElement(StatRow, {
+    label: "Instantaneous trip",
+    value: "1.2\xD7 In"
+  }), /*#__PURE__*/React.createElement(StatRow, {
+    label: "Fault clear time",
+    value: "\u2264 60 ms",
+    good: true
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "rounded-lg bg-grid-panel/60 border border-grid-border/50 p-3"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "text-xs text-slate-400 uppercase tracking-wider mb-2"
+  }, "Undervoltage (27)"), /*#__PURE__*/React.createElement(StatRow, {
+    label: "Trip threshold",
+    value: "0.90 pu (29.7 kV)"
+  }), /*#__PURE__*/React.createElement(StatRow, {
+    label: "Delay",
+    value: "2.0 s"
+  }), /*#__PURE__*/React.createElement(StatRow, {
+    label: "Reset",
+    value: "0.95 pu",
+    good: true
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "rounded-lg bg-grid-panel/60 border border-grid-border/50 p-3"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "text-xs text-slate-400 uppercase tracking-wider mb-2"
+  }, "Thermal Overload (49)"), /*#__PURE__*/React.createElement(StatRow, {
+    label: "Alarm",
+    value: "\u2265 78% load"
+  }), /*#__PURE__*/React.createElement(StatRow, {
+    label: "Trip",
+    value: "\u2265 100% load"
+  }), /*#__PURE__*/React.createElement(StatRow, {
+    label: "Feeder cap",
+    value: "8 MW",
+    good: true
+  })))));
+}
+function FaultLocalPage() {
+  const {
+    grid
+  } = useGrid();
+  const fault = grid.faults.find(f => f.id === grid.activeFaultId);
+  const [selection, setSelection] = useState(null);
+  if (!fault) {
+    return /*#__PURE__*/React.createElement("div", {
+      className: "space-y-5"
+    }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("h2", {
+      className: "text-lg font-bold text-slate-100"
+    }, "Fault Localisation"), /*#__PURE__*/React.createElement("p", {
+      className: "text-sm text-slate-400"
+    }, "Focused zoom view of the suspected faulty line segment and the protective relay trip sequence.")), /*#__PURE__*/React.createElement(Card, {
+      title: "No Active Fault",
+      icon: "crosshair"
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "flex flex-col items-center py-12 text-center"
+    }, /*#__PURE__*/React.createElement(Icon, {
+      name: "checkCircle",
+      className: "w-12 h-12 text-healthy mb-2"
+    }), /*#__PURE__*/React.createElement("div", {
+      className: "text-sm text-slate-300 font-semibold"
+    }, "No fault to localise"), /*#__PURE__*/React.createElement("div", {
+      className: "text-xs text-slate-500 mt-1"
+    }, "Trigger Scenario 1 or Scenario 2 from the Simulation Centre to view the localisation zoom and relay sequence."))));
+  }
+  const seq = grid.relaySequence || [];
+  const edge = grid.edges.find(e => e.id === fault.edgeId);
+  const seqIcon = {
+    fault: 'siren',
+    pickup: 'alertTriangle',
+    trip: 'zap',
+    break: 'power',
+    iso: 'shieldCheck'
+  };
+  const seqColor = {
+    fault: 'faulted',
+    pickup: 'warning',
+    trip: 'faulted',
+    break: 'faulted',
+    iso: 'healthy'
+  };
+  return /*#__PURE__*/React.createElement("div", {
+    className: "space-y-5"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center justify-between flex-wrap gap-3"
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("h2", {
+    className: "text-lg font-bold text-slate-100"
+  }, "Fault Localisation \u2014 ", fault.id), /*#__PURE__*/React.createElement("p", {
+    className: "text-sm text-slate-400"
+  }, fault.type)), /*#__PURE__*/React.createElement(Badge, {
+    status: fault.severity
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "grid grid-cols-1 xl:grid-cols-3 gap-4"
+  }, /*#__PURE__*/React.createElement(Card, {
+    title: "Fault Segment Zoom View",
+    icon: "crosshair",
+    className: "xl:col-span-2",
+    action: /*#__PURE__*/React.createElement("span", {
+      className: "text-[11px] text-faulted font-mono inline-flex items-center gap-1"
+    }, /*#__PURE__*/React.createElement(Icon, {
+      name: "target",
+      className: "w-3.5 h-3.5"
+    }), fault.edgeName)
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "border border-grid-border/60 rounded-lg overflow-hidden bg-grid-panel"
+  }, /*#__PURE__*/React.createElement(NetworkMap, {
+    grid: grid,
+    onSelect: setSelection,
+    selected: selection,
+    zoomEdge: fault.edgeId,
+    highlightEdge: fault.edgeId
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "mt-3 grid grid-cols-2 md:grid-cols-4 gap-2 text-sm"
+  }, /*#__PURE__*/React.createElement(StatRow, {
+    label: "Segment",
+    value: edge ? edge.name : '—'
+  }), /*#__PURE__*/React.createElement(StatRow, {
+    label: "From",
+    value: fault.edgeId.split('-')[1] || edge?.from
+  }), /*#__PURE__*/React.createElement(StatRow, {
+    label: "To",
+    value: fault.edgeId.split('-')[2] || edge?.to
+  }), /*#__PURE__*/React.createElement(StatRow, {
+    label: "Switch",
+    value: edge?.switch || '—'
+  }), /*#__PURE__*/React.createElement(StatRow, {
+    label: "Voltage",
+    value: (edge?.telemetry.voltageKV || 0).toFixed(2) + ' kV',
+    good: false
+  }), /*#__PURE__*/React.createElement(StatRow, {
+    label: "Current",
+    value: (edge?.telemetry.currentA || 0) + ' A',
+    good: false
+  }), /*#__PURE__*/React.createElement(StatRow, {
+    label: "Load",
+    value: (edge?.telemetry.loadPct || 0) + ' %',
+    good: false
+  }), /*#__PURE__*/React.createElement(StatRow, {
+    label: "Status",
+    value: "FAULTED",
+    good: false
+  }))), /*#__PURE__*/React.createElement(Card, {
+    title: "Protective Relay Trip Sequence",
+    icon: "terminal",
+    action: /*#__PURE__*/React.createElement("span", {
+      className: "text-[11px] text-slate-500 font-mono"
+    }, "timeline (ms)")
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "relative pl-6"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "absolute left-2 top-2 bottom-2 w-px bg-grid-border"
+  }), seq.map((s, i) => {
+    const color = seqColor[s.tag] || 'restoration';
+    const m = STATUS_META[color];
+    return /*#__PURE__*/React.createElement("div", {
+      key: i,
+      className: "relative pb-4 last:pb-0 fade-in",
+      style: {
+        animationDelay: i * 60 + 'ms'
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "absolute -left-[18px] top-1 w-3 h-3 rounded-full border-2 " + m.bg + ' ' + m.ring
+    }), /*#__PURE__*/React.createElement("div", {
+      className: "flex items-center gap-2"
+    }, /*#__PURE__*/React.createElement("span", {
+      className: "text-[11px] font-mono text-slate-500 w-12"
+    }, "t=", s.t, "ms"), /*#__PURE__*/React.createElement("span", {
+      className: "text-sm font-semibold text-slate-100"
+    }, s.label)), /*#__PURE__*/React.createElement("div", {
+      className: "text-xs text-slate-400 mt-0.5 pl-[60px]"
+    }, s.detail));
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "mt-3 rounded-lg bg-faulted/10 border border-faulted/30 p-3 text-xs text-slate-300"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center gap-2 text-faulted font-semibold mb-1"
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "alertTriangle",
+    className: "w-4 h-4"
+  }), "Fault Isolation Complete"), "Upstream intact \xB7 Downstream ", fault.affectedDesc, ". Restoration decision engine engaged."))), /*#__PURE__*/React.createElement(Card, {
+    title: "Fault Summary",
+    icon: "fileText"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "grid grid-cols-1 md:grid-cols-3 gap-4 text-sm"
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    className: "text-xs text-slate-400 uppercase tracking-wider mb-2"
+  }, "Detection"), /*#__PURE__*/React.createElement(StatRow, {
+    label: "Fault ID",
+    value: fault.id
+  }), /*#__PURE__*/React.createElement(StatRow, {
+    label: "Detected",
+    value: fmtDateTime(fault.ts)
+  }), /*#__PURE__*/React.createElement(StatRow, {
+    label: "Scenario",
+    value: fault.scenarioId
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    className: "text-xs text-slate-400 uppercase tracking-wider mb-2"
+  }, "Classification"), /*#__PURE__*/React.createElement(StatRow, {
+    label: "Type",
+    value: fault.type
+  }), /*#__PURE__*/React.createElement(StatRow, {
+    label: "Severity",
+    value: fault.severity.toUpperCase(),
+    good: false
+  }), /*#__PURE__*/React.createElement(StatRow, {
+    label: "Segment",
+    value: fault.edgeName
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    className: "text-xs text-slate-400 uppercase tracking-wider mb-2"
+  }, "Impact"), /*#__PURE__*/React.createElement(StatRow, {
+    label: "Affected",
+    value: fault.affectedDesc
+  }), /*#__PURE__*/React.createElement(StatRow, {
+    label: "Consumers",
+    value: grid.kpis.affectedConsumers.toLocaleString(),
+    good: grid.kpis.affectedConsumers === 0
+  }), /*#__PURE__*/React.createElement(StatRow, {
+    label: "Disconnected load",
+    value: grid.affectedAreas.reduce((s, a) => s + a.loadMW, 0).toFixed(2) + ' MW',
+    good: false
+  }))), /*#__PURE__*/React.createElement("div", {
+    className: "mt-3 text-xs text-slate-400"
+  }, fault.desc)), /*#__PURE__*/React.createElement(TelemetryPanel, {
+    grid: grid,
+    selection: selection,
+    onClose: () => setSelection(null)
+  }));
+}
+function AffectedPage() {
+  const {
+    grid
+  } = useGrid();
+  const areas = grid.affectedAreas || [];
+  const totalLoad = areas.reduce((s, a) => s + a.loadMW, 0).toFixed(2);
+  const totalCons = areas.reduce((s, a) => s + a.consumers, 0);
+  return /*#__PURE__*/React.createElement("div", {
+    className: "space-y-5"
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("h2", {
+    className: "text-lg font-bold text-slate-100"
+  }, "Affected Areas \u2014 Impact Breakdown"), /*#__PURE__*/React.createElement("p", {
+    className: "text-sm text-slate-400"
+  }, "Disconnected zones, estimated load shed (MW) and affected consumer counts following the active fault.")), /*#__PURE__*/React.createElement("div", {
+    className: "grid grid-cols-2 md:grid-cols-4 gap-4"
+  }, /*#__PURE__*/React.createElement(KPICard, {
+    icon: "mapPin",
+    label: "Impacted Zones",
+    value: areas.length,
+    unit: "",
+    sub: "de-energised areas",
+    accent: areas.length > 0 ? 'faulted' : 'healthy'
+  }), /*#__PURE__*/React.createElement(KPICard, {
+    icon: "zap",
+    label: "Disconnected Load",
+    value: totalLoad,
+    unit: "MW",
+    sub: "load shed total",
+    accent: "warning"
+  }), /*#__PURE__*/React.createElement(KPICard, {
+    icon: "users",
+    label: "Affected Consumers",
+    value: totalCons.toLocaleString(),
+    unit: "",
+    sub: "without supply",
+    accent: totalCons > 0 ? 'faulted' : 'healthy'
+  }), /*#__PURE__*/React.createElement(KPICard, {
+    icon: "timer",
+    label: "Outage Duration",
+    value: grid.activeFaultId ? Math.round((NOW() - (grid.faults.find(f => f.id === grid.activeFaultId)?.ts || NOW())) / 1000) : 0,
+    unit: "s",
+    sub: "since fault",
+    accent: "restoration"
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "grid grid-cols-1 xl:grid-cols-3 gap-4"
+  }, /*#__PURE__*/React.createElement(Card, {
+    title: "Impacted Zones Detail",
+    icon: "layers",
+    className: "xl:col-span-2"
+  }, areas.length === 0 ? /*#__PURE__*/React.createElement("div", {
+    className: "flex flex-col items-center py-12 text-center"
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "checkCircle",
+    className: "w-12 h-12 text-healthy mb-2"
+  }), /*#__PURE__*/React.createElement("div", {
+    className: "text-sm text-slate-300 font-semibold"
+  }, "All Zones Energised"), /*#__PURE__*/React.createElement("div", {
+    className: "text-xs text-slate-500 mt-1"
+  }, "No consumer areas are currently affected.")) : /*#__PURE__*/React.createElement("div", {
+    className: "space-y-3"
+  }, areas.map(a => {
+    const node = grid.nodes.find(n => n.id === a.id);
+    const pct = totalCons ? Math.round(a.consumers / totalCons * 100) : 0;
+    return /*#__PURE__*/React.createElement("div", {
+      key: a.id,
+      className: "rounded-lg border border-faulted/30 bg-faulted/5 p-3"
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "flex items-center justify-between"
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "flex items-center gap-2"
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "w-9 h-9 rounded-lg bg-faulted/15 text-faulted flex items-center justify-center"
+    }, /*#__PURE__*/React.createElement(Icon, {
+      name: "mapPin",
+      className: "w-5 h-5"
+    })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+      className: "text-sm font-semibold text-slate-100"
+    }, a.name), /*#__PURE__*/React.createElement("div", {
+      className: "text-[11px] text-slate-500 font-mono"
+    }, a.id, " \xB7 ", a.tag))), /*#__PURE__*/React.createElement(Badge, {
+      status: "faulted",
+      label: "DISCONNECTED"
+    })), /*#__PURE__*/React.createElement("div", {
+      className: "mt-3 grid grid-cols-3 gap-3 text-sm"
+    }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+      className: "text-[11px] text-slate-500 uppercase"
+    }, "Consumers"), /*#__PURE__*/React.createElement("div", {
+      className: "text-lg font-bold text-slate-100 font-mono"
+    }, a.consumers.toLocaleString())), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+      className: "text-[11px] text-slate-500 uppercase"
+    }, "Load Shed"), /*#__PURE__*/React.createElement("div", {
+      className: "text-lg font-bold text-warning font-mono"
+    }, a.loadMW, " MW")), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+      className: "text-[11px] text-slate-500 uppercase"
+    }, "% of Impact"), /*#__PURE__*/React.createElement("div", {
+      className: "text-lg font-bold text-restoration font-mono"
+    }, pct, "%"))), /*#__PURE__*/React.createElement("div", {
+      className: "mt-2 w-full h-1.5 bg-grid-border rounded-full overflow-hidden"
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "h-full bg-faulted rounded-full",
+      style: {
+        width: pct + '%'
+      }
+    })));
+  }))), /*#__PURE__*/React.createElement("div", {
+    className: "space-y-4"
+  }, /*#__PURE__*/React.createElement(Card, {
+    title: "Zone Supply Map",
+    icon: "network"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "space-y-2"
+  }, grid.nodes.filter(n => n.type === 'consumer').map(n => {
+    const affected = !n.powered;
+    return /*#__PURE__*/React.createElement("div", {
+      key: n.id,
+      className: "flex items-center justify-between rounded-lg px-3 py-2 border " + (affected ? 'border-faulted/40 bg-faulted/5' : 'border-grid-border/50 bg-grid-panel/40')
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "flex items-center gap-2"
+    }, /*#__PURE__*/React.createElement("span", {
+      className: "badge-dot " + (affected ? 'bg-faulted' : 'bg-healthy')
+    }), /*#__PURE__*/React.createElement("span", {
+      className: "text-sm text-slate-200"
+    }, n.name)), /*#__PURE__*/React.createElement(Badge, {
+      status: affected ? 'faulted' : 'healthy',
+      label: affected ? 'OFFLINE' : 'SUPPLIED'
+    }));
+  }))), /*#__PURE__*/React.createElement(Card, {
+    title: "Load Restoration Priority",
+    icon: "route"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "text-xs text-slate-400 mb-2"
+  }, "Recommended restore order by criticality:"), /*#__PURE__*/React.createElement("ol", {
+    className: "space-y-2"
+  }, areas.sort((a, b) => b.loadMW - a.loadMW).map((a, i) => /*#__PURE__*/React.createElement("li", {
+    key: a.id,
+    className: "flex items-center gap-2 text-sm"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "w-5 h-5 rounded bg-restoration/15 text-restoration text-[11px] font-bold flex items-center justify-center font-mono"
+  }, i + 1), /*#__PURE__*/React.createElement("span", {
+    className: "text-slate-200 flex-1"
+  }, a.name), /*#__PURE__*/React.createElement("span", {
+    className: "text-slate-400 font-mono text-xs"
+  }, a.loadMW, " MW"))), areas.length === 0 && /*#__PURE__*/React.createElement("li", {
+    className: "text-xs text-slate-500"
+  }, "No prioritisation needed."))))));
+}
+function RestorationPage() {
+  const {
+    grid,
+    loading,
+    actions
+  } = useGrid();
+  const plan = grid.restorationPlan;
+  const fault = grid.faults.find(f => f.id === grid.activeFaultId);
+  const [selection, setSelection] = useState(null);
+  const executed = grid.restorationExecuted;
+  if (!fault || !plan) {
+    return /*#__PURE__*/React.createElement("div", {
+      className: "space-y-5"
+    }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("h2", {
+      className: "text-lg font-bold text-slate-100"
+    }, "Restoration Recommendations"), /*#__PURE__*/React.createElement("p", {
+      className: "text-sm text-slate-400"
+    }, "Graph-based decision engine \u2014 alternative supply paths, capacity constraint checks & switching actions.")), /*#__PURE__*/React.createElement(Card, {
+      title: "No Active Restoration Plan",
+      icon: "route"
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "flex flex-col items-center py-12 text-center"
+    }, /*#__PURE__*/React.createElement(Icon, {
+      name: "checkCircle",
+      className: "w-12 h-12 text-healthy mb-2"
+    }), /*#__PURE__*/React.createElement("div", {
+      className: "text-sm text-slate-300 font-semibold"
+    }, "Grid is healthy \u2014 nothing to restore"), /*#__PURE__*/React.createElement("div", {
+      className: "text-xs text-slate-500 mt-1"
+    }, "Trigger a fault scenario from the Simulation Centre to compute alternative supply paths."))));
+  }
+  const cap = plan.capacityCheck;
+  const capPass = cap.result === 'Pass';
+  return /*#__PURE__*/React.createElement("div", {
+    className: "space-y-5"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center justify-between flex-wrap gap-3"
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("h2", {
+    className: "text-lg font-bold text-slate-100"
+  }, "Restoration Decision Engine"), /*#__PURE__*/React.createElement("p", {
+    className: "text-sm text-slate-400"
+  }, fault.id, " \xB7 ", plan.strategy)), /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center gap-2"
+  }, executed && grid.statusPhase === 'restored' && /*#__PURE__*/React.createElement(Badge, {
+    status: "healthy",
+    label: "RESTORED"
+  }), grid.statusPhase === 'no_route' && /*#__PURE__*/React.createElement(Badge, {
+    status: "faulted",
+    label: "NO FEASIBLE ROUTE"
+  }), !executed && capPass && grid.statusPhase !== 'restored' && /*#__PURE__*/React.createElement(Badge, {
+    status: "restoration",
+    label: "PLAN READY"
+  }))), grid.statusPhase === 'no_route' ? /*#__PURE__*/React.createElement(Card, {
+    title: "No Feasible Restoration Route",
+    icon: "ban"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "rounded-lg bg-faulted/10 border border-faulted/40 p-4"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex items-start gap-3"
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "ban",
+    className: "w-8 h-8 text-faulted shrink-0"
+  }), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    className: "text-sm font-bold text-faulted"
+  }, "Thermal Overload Constraint Violated"), /*#__PURE__*/React.createElement("p", {
+    className: "text-xs text-slate-300 mt-1"
+  }, "Closing tie-switch ", plan.tieSwitch, " to backfeed via ", plan.altFeeder, " would push projected load to ", /*#__PURE__*/React.createElement("span", {
+    className: "font-mono text-faulted"
+  }, cap.projectedLoadMW, " MW"), ", exceeding feeder capacity of ", /*#__PURE__*/React.createElement("span", {
+    className: "font-mono"
+  }, cap.capacityMW, " MW"), " (margin ", cap.marginMW, " MW). No graph-based alternative route satisfies constraints."), /*#__PURE__*/React.createElement("div", {
+    className: "mt-2 text-xs text-slate-400"
+  }, "Required action: manual crew dispatch, load shedding, or wait for off-peak to attempt restoration.")))), /*#__PURE__*/React.createElement("div", {
+    className: "mt-3 flex flex-wrap gap-2"
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => actions.resetGrid(),
+    className: "px-3 py-2 rounded-lg bg-grid-card border border-grid-border text-slate-200 text-sm hover:bg-grid-surface inline-flex items-center gap-2"
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "rotateCcw",
+    className: "w-4 h-4"
+  }), "Reset Grid"), /*#__PURE__*/React.createElement("button", {
+    onClick: () => actions.triggerScenario('S2'),
+    className: "px-3 py-2 rounded-lg bg-grid-card border border-grid-border text-slate-200 text-sm hover:bg-grid-surface inline-flex items-center gap-2"
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "refresh",
+    className: "w-4 h-4"
+  }), "Re-evaluate Plan"))) : null, /*#__PURE__*/React.createElement("div", {
+    className: "grid grid-cols-1 xl:grid-cols-3 gap-4"
+  }, /*#__PURE__*/React.createElement(Card, {
+    title: "Alternative Supply Path (Graph)",
+    icon: "gitBranch",
+    className: "xl:col-span-2",
+    action: /*#__PURE__*/React.createElement("span", {
+      className: "text-[11px] text-restoration font-mono inline-flex items-center gap-1"
+    }, /*#__PURE__*/React.createElement(Icon, {
+      name: "route",
+      className: "w-3.5 h-3.5"
+    }), "via ", plan.altFeeder)
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "border border-grid-border/60 rounded-lg overflow-hidden bg-grid-panel"
+  }, /*#__PURE__*/React.createElement(NetworkMap, {
+    grid: grid,
+    onSelect: setSelection,
+    selected: selection,
+    highlightEdge: fault.edgeId
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "mt-3"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "text-xs text-slate-400 uppercase tracking-wider mb-2"
+  }, "Active Restoration Route"), capPass ? /*#__PURE__*/React.createElement("div", {
+    className: "flex flex-wrap items-center gap-2 text-xs"
+  }, /*#__PURE__*/React.createElement(Badge, {
+    status: "healthy",
+    label: plan.altFeeder
+  }), /*#__PURE__*/React.createElement(Icon, {
+    name: "arrowRight",
+    className: "w-4 h-4 text-restoration"
+  }), /*#__PURE__*/React.createElement(Badge, {
+    status: "restoration",
+    label: plan.tieSwitch
+  }), /*#__PURE__*/React.createElement(Icon, {
+    name: "arrowRight",
+    className: "w-4 h-4 text-restoration"
+  }), plan.restoreTargets.map(t => /*#__PURE__*/React.createElement("span", {
+    key: t,
+    className: "inline-flex items-center gap-1"
+  }, /*#__PURE__*/React.createElement(Badge, {
+    status: "restoration",
+    label: t
+  }), plan.restoreTargets.indexOf(t) < plan.restoreTargets.length - 1 && /*#__PURE__*/React.createElement("span", {
+    className: "text-slate-500"
+  }, "+")))) : /*#__PURE__*/React.createElement("div", {
+    className: "text-xs text-faulted inline-flex items-center gap-2"
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "ban",
+    className: "w-4 h-4"
+  }), "No path satisfies capacity constraints."))), /*#__PURE__*/React.createElement(Card, {
+    title: "Capacity Constraint Check",
+    icon: "gauge",
+    action: /*#__PURE__*/React.createElement(Badge, {
+      status: cap.result
+    })
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "space-y-1"
+  }, /*#__PURE__*/React.createElement(StatRow, {
+    label: "Alternative feeder",
+    value: cap.feeder
+  }), /*#__PURE__*/React.createElement(StatRow, {
+    label: "Feeder capacity",
+    value: cap.capacityMW + ' MW',
+    good: true
+  }), /*#__PURE__*/React.createElement(StatRow, {
+    label: "Current load",
+    value: cap.currentLoadMW + ' MW'
+  }), /*#__PURE__*/React.createElement(StatRow, {
+    label: "Added load (restore)",
+    value: cap.addedLoadMW + ' MW'
+  }), /*#__PURE__*/React.createElement(StatRow, {
+    label: "Projected load",
+    value: cap.projectedLoadMW + ' MW',
+    good: capPass
+  }), /*#__PURE__*/React.createElement(StatRow, {
+    label: "Thermal margin",
+    value: (cap.marginMW >= 0 ? '+' : '') + cap.marginMW + ' MW',
+    good: capPass
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "mt-3 rounded-lg p-3 text-xs " + (capPass ? 'bg-healthy/10 border border-healthy/30 text-healthy' : 'bg-faulted/10 border border-faulted/30 text-faulted')
+  }, capPass ? 'PASS — Feeder ' + cap.feeder + ' can absorb additional ' + cap.addedLoadMW + ' MW within thermal limit.' : 'FAIL — Projected load exceeds feeder thermal capacity by ' + Math.abs(cap.marginMW) + ' MW.'))), /*#__PURE__*/React.createElement(Card, {
+    title: "Recommended Switching Actions",
+    icon: "wrench",
+    action: !executed && capPass && grid.statusPhase !== 'restored' ? /*#__PURE__*/React.createElement("span", {
+      className: "text-[11px] text-restoration font-mono"
+    }, "awaiting execution") : executed ? /*#__PURE__*/React.createElement("span", {
+      className: "text-[11px] text-healthy font-mono"
+    }, "executed \u2713") : null
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "space-y-2"
+  }, plan.actions.map((a, i) => {
+    const done = executed;
+    const iconKind = a.kind === 'open' ? 'x' : 'plus';
+    const colorCls = a.kind === 'open' ? 'text-faulted bg-faulted/15 border-faulted/40' : 'text-healthy bg-healthy/15 border-healthy/40';
+    return /*#__PURE__*/React.createElement("div", {
+      key: a.id,
+      className: "rounded-lg border p-3 flex items-start gap-3 " + (done ? 'border-healthy/40 bg-healthy/5' : 'border-grid-border/60 bg-grid-panel/50')
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "text-[11px] font-mono text-slate-500 w-5 pt-1"
+    }, (i + 1).toString().padStart(2, '0')), /*#__PURE__*/React.createElement("div", {
+      className: "w-9 h-9 rounded-lg flex items-center justify-center shrink-0 border " + colorCls
+    }, /*#__PURE__*/React.createElement(Icon, {
+      name: done ? 'check' : iconKind,
+      className: "w-5 h-5"
+    })), /*#__PURE__*/React.createElement("div", {
+      className: "flex-1 min-w-0"
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "flex items-center gap-2 flex-wrap"
+    }, /*#__PURE__*/React.createElement("span", {
+      className: "text-xs font-bold uppercase " + (a.kind === 'open' ? 'text-faulted' : 'text-healthy')
+    }, a.kind), /*#__PURE__*/React.createElement("span", {
+      className: "text-sm font-semibold text-slate-100 font-mono"
+    }, a.target), done && /*#__PURE__*/React.createElement(Badge, {
+      status: "healthy",
+      label: "DONE"
+    })), /*#__PURE__*/React.createElement("div", {
+      className: "text-xs text-slate-300 mt-0.5"
+    }, a.desc), /*#__PURE__*/React.createElement("div", {
+      className: "text-[11px] text-slate-500 mt-0.5"
+    }, "Reason: ", a.reason)));
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "mt-4 flex flex-wrap items-center gap-3"
+  }, !executed && capPass && grid.statusPhase !== 'restored' && /*#__PURE__*/React.createElement("button", {
+    onClick: () => actions.executeRestoration(),
+    disabled: loading,
+    className: "px-4 py-2.5 rounded-lg bg-restoration hover:bg-restoration/90 disabled:opacity-60 text-grid-bg font-semibold text-sm inline-flex items-center gap-2 transition-colors"
+  }, loading ? /*#__PURE__*/React.createElement(Icon, {
+    name: "refresh",
+    className: "w-4 h-4 spin-slow"
+  }) : /*#__PURE__*/React.createElement(Icon, {
+    name: "play",
+    className: "w-4 h-4"
+  }), loading ? 'Executing…' : 'Simulate Restoration'), !capPass && grid.statusPhase !== 'no_route' && /*#__PURE__*/React.createElement("button", {
+    onClick: () => actions.executeRestoration(),
+    disabled: loading,
+    className: "px-4 py-2.5 rounded-lg bg-faulted/80 hover:bg-faulted disabled:opacity-60 text-white font-semibold text-sm inline-flex items-center gap-2"
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "ban",
+    className: "w-4 h-4"
+  }), "Confirm No Feasible Route"), executed && grid.statusPhase === 'restored' && /*#__PURE__*/React.createElement("div", {
+    className: "inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-healthy/15 border border-healthy/40 text-healthy text-sm font-semibold"
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "checkCircle",
+    className: "w-4 h-4"
+  }), "Restoration executed \u2014 Areas re-energised via ", plan.tieSwitch), /*#__PURE__*/React.createElement("button", {
+    onClick: () => actions.resetGrid(),
+    className: "px-3 py-2.5 rounded-lg bg-grid-card border border-grid-border text-slate-200 text-sm hover:bg-grid-surface inline-flex items-center gap-2"
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "rotateCcw",
+    className: "w-4 h-4"
+  }), "Reset Grid"))), /*#__PURE__*/React.createElement(TelemetryPanel, {
+    grid: grid,
+    selection: selection,
+    onClose: () => setSelection(null)
+  }));
+}
+function SimulationPage() {
+  const {
+    grid,
+    loading,
+    actions
+  } = useGrid();
+  const scenarios = [{
+    id: 'S1',
+    name: 'Scenario 1 — Line Fault (Restorable)',
+    tag: 'Self-Healing Success',
+    tagColor: 'restoration',
+    icon: 'siren',
+    accent: 'border-warning/40 bg-warning/5',
+    btnCls: 'bg-warning/90 hover:bg-warning text-grid-bg',
+    summary: 'Permanent line fault on 33kV incomer Substation Alpha → Feeder F2. Areas B & C lose supply. Restorable via Tie-Switch TS-1 backfeed from Feeder F3.',
+    details: ['Fault location: E-SUBA-F2 (Incomer A→F2)', 'Affected: Area B + Area C (~3,500 consumers, 4.06 MW)', 'Restoration path: F3 → TS-1 (close) → DT-102/DT-103', 'Capacity check: F3 (8 MW) can absorb 4.06 MW → PASS', 'Outcome: Automated self-healing restores both areas.'],
+    outcome: 'Restored'
+  }, {
+    id: 'S2',
+    name: 'Scenario 2 — Double-Fault / Peak Load (No Route)',
+    tag: 'No Feasible Route',
+    tagColor: 'faulted',
+    icon: 'ban',
+    accent: 'border-faulted/40 bg-faulted/5',
+    btnCls: 'bg-faulted/90 hover:bg-faulted text-white',
+    summary: 'Line fault on A→F2 during system peak. Feeder F3 simultaneously at thermal limit (Area D load spiked to 6.7 MW). Tie restoration infeasible — exceeds capacity.',
+    details: ['Fault location: E-SUBA-F2 (Incomer A→F2)', 'Secondary condition: F3 thermal overload (Area D = 6.7 MW)', 'Affected: Area B + Area C remain isolated', 'Capacity check: F3 projected 10.76 MW > 8 MW cap → FAIL', 'Outcome: No feasible route — manual dispatch required.'],
+    outcome: 'No Route'
+  }, {
+    id: 'S3',
+    name: 'Scenario 3 — Reset Grid to Healthy',
+    tag: 'System Reset',
+    tagColor: 'healthy',
+    icon: 'rotateCcw',
+    accent: 'border-healthy/40 bg-healthy/5',
+    btnCls: 'bg-healthy/90 hover:bg-healthy text-grid-bg',
+    summary: 'Restore the entire virtual network to nominal healthy state. Clears all active faults, anomalies, relay sequences and restoration plans.',
+    details: ['All line segments → healthy', 'All switches → nominal (TS-1 open)', 'Telemetry → nominal values', 'Fault & anomaly logs retained in Event History', 'Grid health returns to 100%.'],
+    outcome: 'Reset'
+  }];
+  const active = grid.activeFaultId ? grid.faults.find(f => f.id === grid.activeFaultId) : null;
+  return /*#__PURE__*/React.createElement("div", {
+    className: "space-y-5"
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("h2", {
+    className: "text-lg font-bold text-slate-100"
+  }, "Simulation Centre"), /*#__PURE__*/React.createElement("p", {
+    className: "text-sm text-slate-400"
+  }, "Trigger preset fault scenarios to exercise the full fault-to-recovery pipeline \u2014 detection, localisation, restoration planning & execution.")), /*#__PURE__*/React.createElement(Card, {
+    title: "Current Grid State",
+    icon: "gauge"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "grid grid-cols-2 md:grid-cols-4 gap-3 text-sm"
+  }, /*#__PURE__*/React.createElement(StatRow, {
+    label: "Status phase",
+    value: grid.statusPhase.toUpperCase(),
+    good: grid.statusPhase === 'healthy' || grid.statusPhase === 'restored'
+  }), /*#__PURE__*/React.createElement(StatRow, {
+    label: "Active fault",
+    value: grid.activeFaultId || 'None',
+    good: !grid.activeFaultId
+  }), /*#__PURE__*/React.createElement(StatRow, {
+    label: "Grid health",
+    value: grid.kpis.gridHealthPct + '%',
+    good: grid.kpis.gridHealthPct >= 80
+  }), /*#__PURE__*/React.createElement(StatRow, {
+    label: "Affected consumers",
+    value: grid.kpis.affectedConsumers.toLocaleString(),
+    good: grid.kpis.affectedConsumers === 0
+  }))), /*#__PURE__*/React.createElement("div", {
+    className: "grid grid-cols-1 lg:grid-cols-3 gap-4"
+  }, scenarios.map(s => /*#__PURE__*/React.createElement("div", {
+    key: s.id,
+    className: "rounded-xl border p-4 flex flex-col " + s.accent
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex items-start justify-between"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "w-11 h-11 rounded-lg bg-grid-card border border-grid-border flex items-center justify-center"
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: s.icon,
+    className: "w-6 h-6 " + (s.tagColor === 'faulted' ? 'text-faulted' : s.tagColor === 'restoration' ? 'text-warning' : 'text-healthy')
+  })), /*#__PURE__*/React.createElement(Badge, {
+    status: s.tagColor,
+    label: s.tag
+  })), /*#__PURE__*/React.createElement("h3", {
+    className: "text-sm font-bold text-slate-100 mt-3"
+  }, s.name), /*#__PURE__*/React.createElement("p", {
+    className: "text-xs text-slate-400 mt-1.5 flex-1"
+  }, s.summary), /*#__PURE__*/React.createElement("ul", {
+    className: "mt-3 space-y-1 text-[11px] text-slate-400"
+  }, s.details.map((d, i) => /*#__PURE__*/React.createElement("li", {
+    key: i,
+    className: "flex items-start gap-1.5"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "text-restoration mt-0.5"
+  }, "\u203A"), /*#__PURE__*/React.createElement("span", null, d)))), /*#__PURE__*/React.createElement("button", {
+    onClick: () => actions.triggerScenario(s.id),
+    disabled: loading,
+    className: "mt-4 w-full px-3 py-2.5 rounded-lg font-semibold text-sm inline-flex items-center justify-center gap-2 disabled:opacity-60 transition-colors " + s.btnCls
+  }, loading ? /*#__PURE__*/React.createElement(Icon, {
+    name: "refresh",
+    className: "w-4 h-4 spin-slow"
+  }) : /*#__PURE__*/React.createElement(Icon, {
+    name: s.id === 'S3' ? 'rotateCcw' : 'play',
+    className: "w-4 h-4"
+  }), loading ? 'Running…' : s.id === 'S3' ? 'Reset Grid' : 'Inject Fault')))), /*#__PURE__*/React.createElement(Card, {
+    title: "Fault-to-Recovery Pipeline",
+    icon: "gitBranch"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "grid grid-cols-2 md:grid-cols-5 gap-2"
+  }, [{
+    step: 'Detect',
+    icon: 'siren',
+    desc: 'Anomaly threshold breach',
+    done: grid.statusPhase !== 'healthy'
+  }, {
+    step: 'Localise',
+    icon: 'crosshair',
+    desc: 'Relay trip & isolate',
+    done: ['localised', 'planning', 'restoring', 'restored', 'no_route'].includes(grid.statusPhase)
+  }, {
+    step: 'Analyse',
+    icon: 'cpu',
+    desc: 'Graph path search',
+    done: ['planning', 'restoring', 'restored', 'no_route'].includes(grid.statusPhase)
+  }, {
+    step: 'Restore',
+    icon: 'route',
+    desc: 'Switching execution',
+    done: ['restoring', 'restored'].includes(grid.statusPhase)
+  }, {
+    step: 'Verify',
+    icon: 'shieldCheck',
+    desc: 'Supply confirmed',
+    done: grid.statusPhase === 'restored'
+  }].map((p, i) => {
+    const cls = p.done ? 'border-healthy/50 bg-healthy/10 text-healthy' : 'border-grid-border bg-grid-panel/50 text-slate-500';
+    return /*#__PURE__*/React.createElement("div", {
+      key: p.step,
+      className: "rounded-lg border p-3 " + cls
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "flex items-center gap-2"
+    }, /*#__PURE__*/React.createElement(Icon, {
+      name: p.icon,
+      className: "w-4 h-4"
+    }), /*#__PURE__*/React.createElement("span", {
+      className: "text-xs font-bold uppercase"
+    }, (i + 1).toString().padStart(2, '0'), " ", p.step)), /*#__PURE__*/React.createElement("div", {
+      className: "text-[11px] mt-1 opacity-80"
+    }, p.desc));
+  })), active && /*#__PURE__*/React.createElement("div", {
+    className: "mt-3 text-xs text-slate-400"
+  }, "Active scenario ", /*#__PURE__*/React.createElement("span", {
+    className: "font-mono text-restoration"
+  }, active.scenarioId), " \xB7 fault ", /*#__PURE__*/React.createElement("span", {
+    className: "font-mono text-warning"
+  }, active.id), " \xB7 phase ", /*#__PURE__*/React.createElement("span", {
+    className: "font-mono text-slate-200"
+  }, grid.statusPhase))));
+}
+function HistoryPage() {
+  const {
+    grid,
+    actions
+  } = useGrid();
+  const [typeFilter, setTypeFilter] = useState('all');
+  const [query, setQuery] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
+  const events = useMemo(() => {
+    let evs = grid.events;
+    if (typeFilter !== 'all') evs = evs.filter(e => e.type === typeFilter);
+    if (query.trim()) {
+      const q = query.toLowerCase().trim();
+      evs = evs.filter(e => (e.detail || '').toLowerCase().includes(q) || (e.location || '').toLowerCase().includes(q) || (e.faultId || '').toLowerCase().includes(q));
+    }
+    return evs;
+  }, [grid.events, typeFilter, query]);
+  const typeMeta = {
+    fault: {
+      label: 'Fault',
+      color: 'faulted',
+      icon: 'siren'
+    },
+    localisation: {
+      label: 'Localisation',
+      color: 'warning',
+      icon: 'crosshair'
+    },
+    switching: {
+      label: 'Switching',
+      color: 'restoration',
+      icon: 'wrench'
+    },
+    restoration: {
+      label: 'Restoration',
+      color: 'restoration',
+      icon: 'route'
+    },
+    reset: {
+      label: 'Reset',
+      color: 'healthy',
+      icon: 'rotateCcw'
+    }
+  };
+  const outcomeMeta = {
+    detected: {
+      label: 'Detected',
+      color: 'faulted'
+    },
+    localised: {
+      label: 'Localised',
+      color: 'warning'
+    },
+    executed: {
+      label: 'Executed',
+      color: 'restoration'
+    },
+    restored: {
+      label: 'Restored',
+      color: 'healthy'
+    },
+    no_route: {
+      label: 'No Route',
+      color: 'faulted'
+    },
+    reset: {
+      label: 'Reset',
+      color: 'healthy'
+    }
+  };
+  const doRefresh = async () => {
+    setRefreshing(true);
+    await actions.refresh();
+    setRefreshing(false);
+  };
+  const counts = ['all', 'fault', 'localisation', 'switching', 'restoration', 'reset'].map(t => ({
+    t,
+    n: t === 'all' ? grid.events.length : grid.events.filter(e => e.type === t).length
+  }));
+  return /*#__PURE__*/React.createElement("div", {
+    className: "space-y-5"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center justify-between flex-wrap gap-3"
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("h2", {
+    className: "text-lg font-bold text-slate-100"
+  }, "Event History \u2014 Audit Log"), /*#__PURE__*/React.createElement("p", {
+    className: "text-sm text-slate-400"
+  }, "Filterable record of faults, localisation results, switching actions & final restoration outcomes.")), /*#__PURE__*/React.createElement("button", {
+    onClick: doRefresh,
+    className: "px-3 py-2 rounded-lg bg-grid-card border border-grid-border text-slate-200 text-sm hover:bg-grid-surface inline-flex items-center gap-2"
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: refreshing ? 'refresh' : 'rotateCcw',
+    className: "w-4 h-4 " + (refreshing ? 'spin-slow' : '')
+  }), "Refresh")), /*#__PURE__*/React.createElement(Card, {
+    title: "Filters",
+    icon: "filter"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex flex-col md:flex-row gap-3"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex flex-wrap gap-2"
+  }, counts.map(c => {
+    const active = typeFilter === c.t;
+    const label = c.t === 'all' ? 'All' : typeMeta[c.t] ? typeMeta[c.t].label : c.t;
+    return /*#__PURE__*/React.createElement("button", {
+      key: c.t,
+      onClick: () => setTypeFilter(c.t),
+      className: "px-3 py-1.5 rounded-lg text-xs font-semibold border inline-flex items-center gap-2 transition-colors " + (active ? 'bg-restoration/15 border-restoration/50 text-restoration' : 'bg-grid-panel/50 border-grid-border text-slate-400 hover:text-slate-200')
+    }, label, " ", /*#__PURE__*/React.createElement("span", {
+      className: "font-mono opacity-70"
+    }, c.n));
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "relative md:ml-auto md:w-72"
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "search",
+    className: "w-4 h-4 text-slate-500 absolute left-3 top-2.5"
+  }), /*#__PURE__*/React.createElement("input", {
+    value: query,
+    onChange: e => setQuery(e.target.value),
+    placeholder: "Search detail, location, fault ID\u2026",
+    className: "w-full bg-grid-panel border border-grid-border rounded-lg pl-9 pr-3 py-2 text-sm text-slate-100 focus:border-restoration focus:outline-none"
+  })))), /*#__PURE__*/React.createElement(Card, {
+    title: "Audit Log",
+    icon: "list",
+    action: /*#__PURE__*/React.createElement("span", {
+      className: "text-[11px] text-slate-500 font-mono"
+    }, events.length, " of ", grid.events.length, " entries")
+  }, events.length === 0 ? /*#__PURE__*/React.createElement("div", {
+    className: "flex flex-col items-center py-12 text-center"
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "list",
+    className: "w-12 h-12 text-slate-600 mb-2"
+  }), /*#__PURE__*/React.createElement("div", {
+    className: "text-sm text-slate-300 font-semibold"
+  }, "No events match filters"), /*#__PURE__*/React.createElement("div", {
+    className: "text-xs text-slate-500 mt-1"
+  }, "Trigger a scenario or clear filters to see the audit trail.")) : /*#__PURE__*/React.createElement("div", {
+    className: "overflow-x-auto -mx-4 px-4 max-h-[560px] overflow-y-auto"
+  }, /*#__PURE__*/React.createElement("table", {
+    className: "w-full text-sm"
+  }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", {
+    className: "text-[11px] uppercase tracking-wider text-slate-500"
+  }, /*#__PURE__*/React.createElement("th", {
+    className: "text-left py-2 pr-4 font-semibold"
+  }, "Timestamp"), /*#__PURE__*/React.createElement("th", {
+    className: "text-left py-2 pr-4 font-semibold"
+  }, "Type"), /*#__PURE__*/React.createElement("th", {
+    className: "text-left py-2 pr-4 font-semibold"
+  }, "Fault ID"), /*#__PURE__*/React.createElement("th", {
+    className: "text-left py-2 pr-4 font-semibold"
+  }, "Location"), /*#__PURE__*/React.createElement("th", {
+    className: "text-left py-2 pr-4 font-semibold"
+  }, "Detail"), /*#__PURE__*/React.createElement("th", {
+    className: "text-left py-2 font-semibold"
+  }, "Outcome"))), /*#__PURE__*/React.createElement("tbody", null, events.map(e => {
+    const tm = typeMeta[e.type] || {
+      label: e.type,
+      color: 'isolated',
+      icon: 'activity'
+    };
+    const om = outcomeMeta[e.outcome] || {
+      label: e.outcome,
+      color: 'isolated'
+    };
+    return /*#__PURE__*/React.createElement("tr", {
+      key: e.id,
+      className: "border-t border-grid-border/40 hover:bg-grid-panel/50 align-top"
+    }, /*#__PURE__*/React.createElement("td", {
+      className: "py-2.5 pr-4 font-mono text-xs text-slate-400 whitespace-nowrap"
+    }, fmtDateTime(e.ts)), /*#__PURE__*/React.createElement("td", {
+      className: "py-2.5 pr-4"
+    }, /*#__PURE__*/React.createElement(Badge, {
+      status: tm.color,
+      label: tm.label
+    })), /*#__PURE__*/React.createElement("td", {
+      className: "py-2.5 pr-4 font-mono text-xs text-restoration"
+    }, e.faultId || '—'), /*#__PURE__*/React.createElement("td", {
+      className: "py-2.5 pr-4 text-xs text-slate-300"
+    }, e.location || '—'), /*#__PURE__*/React.createElement("td", {
+      className: "py-2.5 pr-4 text-xs text-slate-300 max-w-md"
+    }, e.detail, e.durationSec != null ? /*#__PURE__*/React.createElement("span", {
+      className: "ml-1 text-slate-500 font-mono"
+    }, "(", e.durationSec, "s)") : null), /*#__PURE__*/React.createElement("td", {
+      className: "py-2.5"
+    }, /*#__PURE__*/React.createElement(Badge, {
+      status: om.color,
+      label: om.label
+    })));
+  }))))), /*#__PURE__*/React.createElement("div", {
+    className: "grid grid-cols-2 md:grid-cols-4 gap-4"
+  }, /*#__PURE__*/React.createElement(KPICard, {
+    icon: "siren",
+    label: "Total Faults",
+    value: grid.kpis.totalFaults,
+    unit: "",
+    sub: "detected events",
+    accent: "faulted"
+  }), /*#__PURE__*/React.createElement(KPICard, {
+    icon: "checkCircle",
+    label: "Restored",
+    value: grid.kpis.restoredFaults,
+    unit: "",
+    sub: "self-healed",
+    accent: "healthy"
+  }), /*#__PURE__*/React.createElement(KPICard, {
+    icon: "ban",
+    label: "No-Route",
+    value: grid.events.filter(e => e.outcome === 'no_route').length,
+    unit: "",
+    sub: "manual dispatch",
+    accent: "faulted"
+  }), /*#__PURE__*/React.createElement(KPICard, {
+    icon: "timer",
+    label: "Avg Restore",
+    value: grid.kpis.avgRestorationSec,
+    unit: "s",
+    sub: "across restored events",
+    accent: "restoration"
+  })));
+}
+/* ===== END STUBS ===== */
+
+/* ---------------------------------------------------------------------
+   App shell
+--------------------------------------------------------------------- */
+function Shell({
+  user,
+  onLogout
+}) {
+  const [page, setPage] = useState('dashboard');
+  const [menuOpen, setMenuOpen] = useState(false);
+  const labelMap = Object.fromEntries(PAGES.map(p => [p.id, p.label]));
+  const render = () => {
+    switch (page) {
+      case 'dashboard':
+        return /*#__PURE__*/React.createElement(DashboardPage, null);
+      case 'monitoring':
+        return /*#__PURE__*/React.createElement(MonitoringPage, null);
+      case 'fault-detect':
+        return /*#__PURE__*/React.createElement(FaultDetectPage, null);
+      case 'fault-local':
+        return /*#__PURE__*/React.createElement(FaultLocalPage, null);
+      case 'affected':
+        return /*#__PURE__*/React.createElement(AffectedPage, null);
+      case 'restoration':
+        return /*#__PURE__*/React.createElement(RestorationPage, null);
+      case 'simulation':
+        return /*#__PURE__*/React.createElement(SimulationPage, null);
+      case 'history':
+        return /*#__PURE__*/React.createElement(HistoryPage, null);
+      default:
+        return /*#__PURE__*/React.createElement(DashboardPage, null);
+    }
+  };
+  return /*#__PURE__*/React.createElement("div", {
+    className: "flex min-h-screen bg-grid-bg"
+  }, /*#__PURE__*/React.createElement(Sidebar, {
+    page: page,
+    setPage: setPage,
+    open: menuOpen,
+    setOpen: setMenuOpen
+  }), /*#__PURE__*/React.createElement("div", {
+    className: "flex-1 flex flex-col min-w-0"
+  }, /*#__PURE__*/React.createElement(TopBar, {
+    user: user,
+    onLogout: onLogout,
+    pageLabel: labelMap[page],
+    onMenu: () => setMenuOpen(true)
+  }), /*#__PURE__*/React.createElement("main", {
+    className: "flex-1 overflow-y-auto p-4 lg:p-6"
+  }, /*#__PURE__*/React.createElement("div", {
+    key: page,
+    className: "fade-in max-w-[1600px] mx-auto"
+  }, render()))));
+}
+function App() {
+  const [user, setUser] = useState(null);
+  const [authStep, setAuthStep] = useState('credentials');
+  const [pendingEmail, setPendingEmail] = useState('admin@bescom.sim');
+  const [debugOtp, setDebugOtp] = useState('');
+
+  const handleProceedToOtp = ({ email, debugOtp }) => {
+    setPendingEmail(email);
+    setDebugOtp(debugOtp || '');
+    setAuthStep('otp');
+  };
+
+  const handleVerified = verifiedUser => {
+    setUser(verifiedUser);
+    setAuthStep('credentials');
+  };
+
+  const handleBackToLogin = () => {
+    setAuthStep('credentials');
+    setDebugOtp('');
+  };
+
+  const handleLogout = () => {
+    setUser(null);
+    setAuthStep('credentials');
+    setDebugOtp('');
+  };
+
+  return /*#__PURE__*/React.createElement(GridProvider, null,
+    user
+      ? /*#__PURE__*/React.createElement(Shell, {
+          user: user,
+          onLogout: handleLogout
+        })
+      : authStep === 'otp'
+        ? /*#__PURE__*/React.createElement(OtpVerification, {
+            email: pendingEmail,
+            debugOtp: debugOtp,
+            onVerified: handleVerified,
+            onBack: handleBackToLogin
+          })
+        : /*#__PURE__*/React.createElement(Login, {
+            onProceedToOtp: handleProceedToOtp,
+            onLogin: setUser
+          })
+  );
+}
+ReactDOM.createRoot(document.getElementById('root')).render(/*#__PURE__*/React.createElement(App, null));
+</script>
+</body>
+</html>

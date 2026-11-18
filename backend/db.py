@@ -91,6 +91,13 @@ SCHEMA = [
     """CREATE TABLE IF NOT EXISTS app_state (
         key TEXT PRIMARY KEY, value TEXT
     )""",
+    """CREATE TABLE IF NOT EXISTS otp_codes (
+        email TEXT PRIMARY KEY,
+        code TEXT NOT NULL,
+        created_at REAL NOT NULL,
+        expires_at REAL NOT NULL,
+        attempts INTEGER DEFAULT 0
+    )""",
 ]
 
 DEFAULT_APP_STATE = {
@@ -325,3 +332,60 @@ def reset_topology_to_seed():
         for k, v in DEFAULT_APP_STATE.items():
             conn.execute("INSERT OR REPLACE INTO app_state (key,value) VALUES (?,?)", (k, v))
         conn.commit()
+
+# ---------------------------------------------------------------- OTP queries
+def save_otp(email, code, ttl_seconds=300):
+    email = (email or "").strip().lower()
+    now = time.time()
+    expires_at = now + ttl_seconds
+    with _lock:
+        get_conn().execute(
+            """INSERT OR REPLACE INTO otp_codes (email, code, created_at, expires_at, attempts)
+               VALUES (?, ?, ?, ?, 0)""",
+            (email, str(code), now, expires_at)
+        )
+        get_conn().commit()
+
+def get_otp(email):
+    email = (email or "").strip().lower()
+    with _lock:
+        r = get_conn().execute("SELECT * FROM otp_codes WHERE email=?", (email,)).fetchone()
+        return dict(r) if r else None
+
+def verify_otp(email, code):
+    email = (email or "").strip().lower()
+    code = str(code or "").strip()
+    now = time.time()
+    with _lock:
+        r = get_conn().execute("SELECT * FROM otp_codes WHERE email=?", (email,)).fetchone()
+        if not r:
+            return False, "No OTP request found for this email. Please request a new code."
+        
+        row = dict(r)
+        if row["expires_at"] < now:
+            get_conn().execute("DELETE FROM otp_codes WHERE email=?", (email,))
+            get_conn().commit()
+            return False, "Verification code has expired. Please request a new code."
+            
+        if row["attempts"] >= 5:
+            get_conn().execute("DELETE FROM otp_codes WHERE email=?", (email,))
+            get_conn().commit()
+            return False, "Maximum verification attempts exceeded. Please request a new code."
+            
+        if row["code"] != code:
+            get_conn().execute("UPDATE otp_codes SET attempts = attempts + 1 WHERE email=?", (email,))
+            get_conn().commit()
+            remaining = 5 - (row["attempts"] + 1)
+            return False, f"Incorrect verification code. {remaining} attempt(s) remaining."
+            
+        # Valid: clear OTP
+        get_conn().execute("DELETE FROM otp_codes WHERE email=?", (email,))
+        get_conn().commit()
+        return True, "Verification successful."
+
+def clear_otp(email):
+    email = (email or "").strip().lower()
+    with _lock:
+        get_conn().execute("DELETE FROM otp_codes WHERE email=?", (email,))
+        get_conn().commit()
+
